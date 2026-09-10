@@ -1,0 +1,51 @@
+# Local dev stack. Frontend and a live inference/deploy service are added
+# in the Sep 18-27 build window (see docs/day1_status.md); today this
+# brings up the backend, Postgres, and MLflow so the ML pipeline has
+# somewhere to persist runs.
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: argus
+      POSTGRES_PASSWORD: argus
+      POSTGRES_DB: argus
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  mlflow:
+    image: python:3.11-slim
+    working_dir: /mlflow
+    command: >
+      bash -c "pip install --no-cache-dir mlflow psycopg2-binary &&
+               mlflow server --host 0.0.0.0 --port 5000
+               --backend-store-uri postgresql://argus:argus@postgres/argus
+               --default-artifact-root /mlflow/artifacts"
+    ports:
+      - "5000:5000"
+    volumes:
+      - mlflow_artifacts:/mlflow/artifacts
+    depends_on:
+      - postgres
+
+  backend:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgresql://argus:argus@postgres/argus
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - ./data:/data
+    depends_on:
+      - postgres
+      - mlflow
+
+volumes:
+  pgdata:
+  mlflow_artifacts:

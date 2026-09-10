@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+node_modules/
+.next/
+data/cmapss/
+data/first_run_results.json
+*.egg-info/
+.DS_Store
+.env
