@@ -43,6 +43,8 @@ class AttemptResult:
     conformal_q: float
     conformal_coverage: float
     n_features: int
+    feature_columns: list[str] = field(default_factory=list)
+    background_sample: list[dict] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
 
@@ -132,6 +134,8 @@ def run_attempt(
     test_metrics = full_report(y_test_true, test_pred)
     cov = coverage(y_test_true.to_numpy(), test_pred, q)
 
+    background = X_train.sample(n=min(50, len(X_train)), random_state=RANDOM_STATE)
+
     result = AttemptResult(
         attempt_number=attempt_number,
         feature_spec=feature_spec,
@@ -142,6 +146,8 @@ def run_attempt(
         conformal_q=q,
         conformal_coverage=cov,
         n_features=X_train.shape[1],
+        feature_columns=list(X_train.columns),
+        background_sample=background.to_dict(orient="records"),
     )
     return result, model
 

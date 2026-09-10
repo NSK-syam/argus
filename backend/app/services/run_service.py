@@ -1,0 +1,172 @@
+"""Ties the pure ML core (orchestrator.py) to persistence (SQLAlchemy),
+tracking (MLflow), and model artifacts -- none of which the ML core knows
+anything about. A run executes in a background thread so
+``POST /api/v1/runs`` can return immediately with a run id, and
+``GET /api/v1/runs/{id}/events`` can stream progress by polling the
+database (see ``app/api/runs.py``).
+
+Job state is persisted BEFORE execution starts (status="pending" at
+creation, "running" once the concurrency slot is acquired) — see
+``app/main.py``'s startup handler for how a restart recovers from a run
+stuck mid-flight.
+"""
+
+from __future__ import annotations
+
+import logging
+import threading
+
+import joblib
+import pandas as pd
+from sqlalchemy.orm import Session
+
+from ..core.config import settings
+from ..db import models
+from ..db.session import SessionLocal
+from ..ml.data import cmapss
+from ..ml.pipeline import explain
+from ..ml.pipeline.mlflow_logging import log_attempt
+from ..ml.pipeline.orchestrator import LoggedAttempt, run_reflection_loop
+
+logger = logging.getLogger(__name__)
+
+# The build plan requires the public backend to run one training job at a
+# time; settings.max_concurrent_runs defaults to 1.
+_run_slot = threading.Semaphore(settings.max_concurrent_runs)
+
+
+def create_dataset_from_bundled_fd001(db: Session) -> models.Dataset:
+    train_df = cmapss.load_fd001_train(settings.data_dir)
+    profile = cmapss.profile_dataset(train_df)
+    dataset = models.Dataset(
+        name="NASA C-MAPSS FD001 (bundled)",
+        source="bundled_fd001",
+        schema_json={"columns": cmapss.ALL_COLS},
+        profile_json={
+            "n_engines": profile.n_engines,
+            "n_rows": profile.n_rows,
+            "constant_sensors": profile.constant_sensors,
+            "near_constant_sensors": profile.near_constant_sensors,
+            "engine_life_stats": profile.engine_life_stats,
+            "leakage_risk_notes": profile.leakage_risk_notes,
+        },
+        storage_path=str(settings.data_dir),
+        n_rows=profile.n_rows,
+    )
+    db.add(dataset)
+    db.commit()
+    db.refresh(dataset)
+    return dataset
+
+
+def start_run(db: Session, dataset: models.Dataset, goal: str) -> models.PipelineRun:
+    run = models.PipelineRun(dataset_id=dataset.id, goal=goal, status="pending")
+    db.add(run)
+    db.commit()
+    db.refresh(run)
+
+    thread = threading.Thread(target=_execute_run, args=(run.id,), daemon=True)
+    thread.start()
+    return run
+
+
+def _execute_run(run_id: str) -> None:
+    db = SessionLocal()
+    try:
+        with _run_slot:
+            run = db.get(models.PipelineRun, run_id)
+            if run is None:
+                return
+            run.status = "running"
+            db.commit()
+
+            def on_attempt(logged: LoggedAttempt, model) -> None:
+                _persist_attempt(db, run_id, logged, model)
+
+            try:
+                result = run_reflection_loop(settings.data_dir, on_attempt=on_attempt)
+            except Exception as exc:  # noqa: BLE001 - a training crash must be recorded, not lost
+                run = db.get(models.PipelineRun, run_id)
+                run.status = "failed"
+                run.error = f"{type(exc).__name__}: {exc}"
+                db.commit()
+                logger.exception("run %s failed", run_id)
+                return
+
+            run = db.get(models.PipelineRun, run_id)
+            run.status = "succeeded"
+            run.winning_attempt_number = result.promoted_attempt
+            run.stopped_reason = result.stopped_reason
+            db.commit()
+    finally:
+        db.close()
+
+
+def _persist_attempt(db: Session, run_id: str, logged: LoggedAttempt, model) -> None:
+    r = logged.result
+    attempt = models.Attempt(
+        run_id=run_id,
+        attempt_number=r.attempt_number,
+        plan_json={"feature_spec": r.feature_spec, "model_family": r.model_family},
+        model_family=r.model_family,
+        hyperparams_json=r.hyperparams,
+        validation_metrics_json=r.validation_metrics,
+        test_metrics_json=r.test_metrics,
+        conformal_coverage=r.conformal_coverage,
+        gate_json=logged.gate.as_evidence(),
+        gate_passed=logged.gate.passed,
+        revision_action=logged.revision_action,
+        revision_rationale=logged.revision_rationale,
+        plan_source=logged.plan_source,
+        fallback_reason=logged.fallback_reason,
+    )
+    db.add(attempt)
+    db.commit()
+    db.refresh(attempt)
+
+    mlflow_run_id = log_attempt(settings.mlflow_tracking_uri, run_id, logged)
+    if mlflow_run_id:
+        attempt.mlflow_run_id = mlflow_run_id
+        db.commit()
+
+    artifact_dir = settings.model_artifact_dir / run_id
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    artifact_path = artifact_dir / f"attempt-{r.attempt_number}.joblib"
+    joblib.dump(model, artifact_path)
+
+    shap_summary: dict = {}
+    try:
+        if r.background_sample:
+            bg = pd.DataFrame(r.background_sample)[r.feature_columns]
+            explainer = explain.build_explainer(model, bg, r.model_family)
+            shap_summary = {"global_importance": explain.global_importance(explainer, bg)}
+    except Exception as exc:  # noqa: BLE001 - explanation failures must not lose the model/run
+        logger.warning("SHAP summary failed for run %s attempt %d: %s", run_id, r.attempt_number, exc)
+
+    model_version = models.ModelVersion(
+        run_id=run_id,
+        attempt_number=r.attempt_number,
+        model_family=r.model_family,
+        artifact_path=str(artifact_path),
+        feature_columns_json=r.feature_columns,
+        conformal_q=r.conformal_q,
+        shap_summary_json=shap_summary,
+        trust_gate_passed=logged.gate.passed,
+        stage="shadow",
+    )
+    db.add(model_version)
+    db.commit()
+
+
+def recover_interrupted_runs(db: Session) -> int:
+    """Called on startup: a run stuck at status='running' means the
+    process died mid-flight (crash, redeploy). Mark it failed with a
+    clear reason rather than leaving it silently stuck forever -- the
+    caller can retry by starting a new run against the same dataset."""
+    stuck = db.query(models.PipelineRun).filter(models.PipelineRun.status == "running").all()
+    for run in stuck:
+        run.status = "failed"
+        run.error = "interrupted_by_restart"
+    if stuck:
+        db.commit()
+    return len(stuck)

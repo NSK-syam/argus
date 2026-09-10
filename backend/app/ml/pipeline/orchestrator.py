@@ -240,12 +240,22 @@ def _resolve_plan(
 
 
 def run_reflection_loop(
-    data_dir: Path, max_revisions: int = MAX_REVISIONS, use_claude: bool | None = None
+    data_dir: Path,
+    max_revisions: int = MAX_REVISIONS,
+    use_claude: bool | None = None,
+    on_attempt=None,
 ) -> PipelineRunResult:
     """Run the full loop. ``use_claude=None`` (default) auto-detects: try
     Claude only if ANTHROPIC_API_KEY is set in the environment. Pass
     ``use_claude=False`` to force the deterministic path (used by the fast
     test suite so results are reproducible without any network access).
+
+    ``on_attempt``, if given, is called as ``on_attempt(logged_attempt,
+    fitted_model)`` right after each attempt is appended to the result --
+    this is what lets a caller (the FastAPI run service) persist progress
+    and save a model artifact incrementally instead of only getting a
+    result once the whole loop finishes, without the ML core itself
+    knowing anything about databases, SSE, or the filesystem.
     """
     if use_claude is None:
         use_claude = bool(os.environ.get("ANTHROPIC_API_KEY"))
@@ -318,7 +328,7 @@ def run_reflection_loop(
                     model_family, X_train, y_train, groups_train, max_trials=6
                 )
 
-        attempt_result, _model = run_attempt(
+        attempt_result, fitted_model = run_attempt(
             attempt_number=attempt_number,
             feature_spec={k: v for k, v in feature_spec.items() if k != "sensor_cols"},
             model_family=model_family,
@@ -347,6 +357,8 @@ def run_reflection_loop(
             fallback_reason=fallback_reason,
         )
         result.attempts.append(logged)
+        if on_attempt is not None:
+            on_attempt(logged, fitted_model)
 
         # keep a structured plan object for the next Claude revision call,
         # regardless of whether THIS attempt's plan came from Claude or

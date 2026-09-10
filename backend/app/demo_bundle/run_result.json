@@ -1,0 +1,130 @@
+{
+  "baseline_test_rmse": 43.06703554245684,
+  "promoted": true,
+  "promoted_attempt": 2,
+  "stopped_reason": "trust_gate_passed",
+  "attempts": [
+    {
+      "attempt_number": 1,
+      "feature_spec": {
+        "windows": [],
+        "lags": []
+      },
+      "model_family": "linear_regression",
+      "hyperparams": {},
+      "n_features": 4,
+      "validation_metrics": {
+        "rmse": 24.164038166003092,
+        "mae": 19.621186232199367,
+        "nasa_score": 291287.5497228859,
+        "f1_at_threshold": 0.6732966567922133,
+        "n": 20631
+      },
+      "test_metrics": {
+        "rmse": 23.433811115840655,
+        "mae": 19.84230407437599,
+        "nasa_score": 1266.4617557538052,
+        "f1_at_threshold": 0.5294117647058824,
+        "n": 100
+      },
+      "conformal_coverage": 0.92,
+      "revision_action": "initial_plan",
+      "revision_rationale": "Start with the cheapest plausible plan: a linear model on the handful of sensors classically associated with degradation in this engine family, no feature engineering yet. If it clears the bar, there's no reason to spend more compute; if not, we know exactly what to add.",
+      "plan_source": "deterministic_fallback",
+      "fallback_reason": null,
+      "trust_gate": {
+        "passed": false,
+        "checks": [
+          {
+            "name": "no_leakage_or_schema_blockers",
+            "passed": true,
+            "detail": "no unresolved leakage/schema blockers"
+          },
+          {
+            "name": "beats_baseline_by_15pct",
+            "passed": true,
+            "detail": "45.6% RMSE improvement over baseline (need >= 15%)"
+          },
+          {
+            "name": "test_rmse_under_22_cycles",
+            "passed": false,
+            "detail": "test RMSE = 23.43 cycles (need <= 22.0)"
+          },
+          {
+            "name": "val_to_test_degradation_under_30pct",
+            "passed": true,
+            "detail": "val->test degradation = -3.0% (need <= 30%)"
+          },
+          {
+            "name": "conformal_coverage_at_least_85pct",
+            "passed": true,
+            "detail": "conformal coverage = 92.0% (need >= 85%)"
+          }
+        ]
+      }
+    },
+    {
+      "attempt_number": 2,
+      "feature_spec": {
+        "windows": [],
+        "lags": []
+      },
+      "model_family": "random_forest",
+      "hyperparams": {
+        "n_estimators": 200,
+        "max_depth": 8,
+        "min_samples_leaf": 2
+      },
+      "n_features": 24,
+      "validation_metrics": {
+        "rmse": 18.61690479940018,
+        "mae": 13.772321893427797,
+        "nasa_score": 284482.4957833762,
+        "f1_at_threshold": 0.8564527260179434,
+        "n": 20631
+      },
+      "test_metrics": {
+        "rmse": 18.420549008424686,
+        "mae": 13.546567958170055,
+        "nasa_score": 984.9321309700753,
+        "f1_at_threshold": 0.7619047619047619,
+        "n": 100
+      },
+      "conformal_coverage": 0.91,
+      "revision_action": "switch_model_family",
+      "revision_rationale": "Attempt 1 failed the trust gate on test RMSE. A linear model can't capture the non-linear relationship between sensor readings and remaining life, and a 4-sensor subset may be discarding useful signal \u2014 switch to a Random Forest and use the full set of non-constant sensors.",
+      "plan_source": "deterministic_fallback",
+      "fallback_reason": null,
+      "trust_gate": {
+        "passed": true,
+        "checks": [
+          {
+            "name": "no_leakage_or_schema_blockers",
+            "passed": true,
+            "detail": "no unresolved leakage/schema blockers"
+          },
+          {
+            "name": "beats_baseline_by_15pct",
+            "passed": true,
+            "detail": "57.2% RMSE improvement over baseline (need >= 15%)"
+          },
+          {
+            "name": "test_rmse_under_22_cycles",
+            "passed": true,
+            "detail": "test RMSE = 18.42 cycles (need <= 22.0)"
+          },
+          {
+            "name": "val_to_test_degradation_under_30pct",
+            "passed": true,
+            "detail": "val->test degradation = -1.1% (need <= 30%)"
+          },
+          {
+            "name": "conformal_coverage_at_least_85pct",
+            "passed": true,
+            "detail": "conformal coverage = 91.0% (need >= 85%)"
+          }
+        ]
+      }
+    }
+  ]
+}
