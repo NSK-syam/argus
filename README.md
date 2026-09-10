@@ -18,9 +18,16 @@ for f in train_FD001.txt test_FD001.txt RUL_FD001.txt; do
 done
 
 # run the full Planner -> Trainer -> Critic reflection loop end-to-end
+# (deterministic planner; no API key needed)
 python3 scripts/run_pipeline_demo.py
 
-# run the test suite (23 tests, ~90s — most of that is real model training)
+# same, but try the live Claude planner first (falls back automatically
+# on any failure, including no key set)
+export ANTHROPIC_API_KEY=sk-...
+python3 scripts/run_pipeline_demo.py --use-claude
+
+# run the test suite (32 tests, ~2.5min — most of that is real model
+# training; the Claude adapter tests use a mocked client, no key needed)
 python3 -m pytest -v
 ```
 

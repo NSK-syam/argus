@@ -189,3 +189,44 @@ def bounded_random_search(
         if score < best_rmse:
             best_rmse, best_params = score, params
     return best_params, best_rmse
+
+
+def bounded_search_from_space(
+    model_family: str,
+    search_space,
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    groups_train: pd.Series,
+    seed: int = RANDOM_STATE,
+) -> tuple[dict, float]:
+    """Same contract as :func:`bounded_random_search`, but the candidate
+    values come from an externally-provided search space (duck-typed:
+    needs ``n_estimators_choices``, ``max_depth_choices``,
+    ``learning_rate_choices``, ``max_trials``) instead of a hardcoded
+    grid -- this is what lets a live Claude-proposed ``PipelinePlan``
+    drive the actual hyperparameter search instead of only the
+    deterministic fallback's fixed grid.
+    """
+    if model_family == "linear_regression":
+        return {}, float("nan")  # nothing to search
+
+    rng = np.random.RandomState(seed)
+    from .evaluate import rmse as rmse_fn
+
+    best_params, best_rmse = None, float("inf")
+    max_trials = max(1, min(int(search_space.max_trials), 8))
+    for _ in range(max_trials):
+        params = {
+            "n_estimators": int(rng.choice(search_space.n_estimators_choices)),
+            "max_depth": int(rng.choice(search_space.max_depth_choices)),
+        }
+        if model_family == "xgboost":
+            lr_choices = search_space.learning_rate_choices or [0.05]
+            params["learning_rate"] = float(rng.choice(lr_choices))
+
+        oof = grouped_cross_val_predict(X_train, y_train, groups_train, model_family, params)
+        oof = np.clip(oof, 0, None)
+        score = rmse_fn(y_train, oof)
+        if score < best_rmse:
+            best_rmse, best_params = score, params
+    return best_params, best_rmse

@@ -4,43 +4,49 @@ This is the single most important module in the prototype: the concrete,
 runnable proof that the pipeline can notice a weak result and change its
 own approach, rather than running once and reporting whatever it got.
 
-The "Planner" here is a **deterministic fallback sequence**, not a live
-Claude call yet. That's intentional and matches the plan's resilience
-requirement directly: a malformed Claude response, a rate limit, or an
-API outage must fall back to a deterministic default plan and never block
-the demo. Building the deterministic path first means the live Claude
-adapter (structured-output pipeline proposals, restricted to this same
-allowlist of revision actions) is a drop-in replacement later, not a
-prerequisite for having a working loop today.
+Two planners exist behind one interface:
 
-Allowed revision actions (matches the plan's allowlist):
-  - "add_rolling_lag_features": richer feature engineering
+  - ``_next_plan``: a **deterministic fallback sequence**. This came first
+    and is fully covered by tests independent of any LLM behavior (see
+    ``tests/test_orchestrator.py``).
+  - ``claude_planner``: a **live Claude adapter** (schema-constrained tool
+    use, evidence-only prompts) that proposes the same shape of plan/
+    revision. It is tried first when enabled; on ANY failure -- missing
+    API key, network error, malformed response, a plan that fails
+    validation -- it raises ``ClaudePlannerError`` and this module falls
+    back to the deterministic sequence and logs why. That fallback is a
+    hard requirement from the build plan, not an edge case: a rate limit
+    or an outage must never block the demo.
+
+Allowed revision actions (matches the plan's allowlist, enforced in
+``plan_schema.RevisionAction``):
+  - "change_feature_windows" / "add_rolling_lag_features...": richer or
+    different feature engineering
+  - "remove_unstable_features": drop features from the sensor subset
   - "switch_model_family": try a different model family
   - "tune_search_space": bounded hyperparameter search on the current model
 """
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+import logging
+import os
+from dataclasses import dataclass, field
 from pathlib import Path
-
-import numpy as np
-import pandas as pd
-from sklearn.model_selection import GroupKFold
 
 from ..data import cmapss
 from ..data.baseline import (
     AttemptResult,
     bounded_random_search,
-    conformal_interval,
-    coverage,
-    fit_final_model,
-    grouped_cross_val_predict,
+    bounded_search_from_space,
     mean_rul_baseline_predictions,
     run_attempt,
 )
 from ..data.evaluate import full_report
+from .plan_schema import FeatureSpec, ModelFamily, PipelinePlan, SearchSpace
 from .trust_gate import TrustGateResult, evaluate_trust_gate
+
+logger = logging.getLogger(__name__)
 
 MAX_REVISIONS = 2  # -> 3 total attempts, per the plan
 
@@ -51,6 +57,8 @@ class LoggedAttempt:
     gate: TrustGateResult
     revision_action: str
     revision_rationale: str
+    plan_source: str = "deterministic_fallback"  # "claude" or "deterministic_fallback"
+    fallback_reason: str | None = None  # set only when a live Claude call was tried and failed
 
 
 @dataclass
@@ -79,6 +87,8 @@ class PipelineRunResult:
                     "conformal_coverage": a.result.conformal_coverage,
                     "revision_action": a.revision_action,
                     "revision_rationale": a.revision_rationale,
+                    "plan_source": a.plan_source,
+                    "fallback_reason": a.fallback_reason,
                     "trust_gate": a.gate.as_evidence(),
                 }
                 for a in self.attempts
@@ -94,19 +104,15 @@ class PipelineRunResult:
 _QUICK_SENSOR_SUBSET = ["sensor_2", "sensor_4", "sensor_11", "sensor_15"]
 
 
-def _next_plan(attempt_number: int, sensor_cols: list[str], prior_failure_evidence: dict | None):
+def _next_plan(attempt_number: int, sensor_cols: list[str]):
     """Deterministic fallback planner. Returns (feature_spec, model_family,
-    hyperparams, action, rationale). ``prior_failure_evidence`` is the
-    trust gate's structured evidence from the previous attempt — this is
-    exactly what would be handed to a live Claude Planner/Critic call
-    instead of this fixed sequence.
+    hyperparams, action, rationale).
 
-    The sequence below is calibrated against the real FD001 data (see
-    docs/attempt_calibration.md): a linear model on a handful of sensors
-    genuinely fails the trust gate's 22-cycle test-RMSE bar (~23.5 cycles),
-    and a Random Forest on the full sensor set genuinely passes it
-    (~18.4 cycles) — this is a real revision responding to a real failure,
-    not a scripted demo.
+    Calibrated against the real FD001 data (see docs/day1_status.md): a
+    linear model on a handful of sensors genuinely fails the trust gate's
+    22-cycle test-RMSE bar (~23.4 cycles), and a Random Forest on the full
+    sensor set genuinely passes it (~18.4 cycles) — a real revision
+    responding to a real failure, not a scripted demo.
     """
     if attempt_number == 1:
         return (
@@ -134,33 +140,151 @@ def _next_plan(attempt_number: int, sensor_cols: list[str], prior_failure_eviden
         {"windows": cmapss.ROLLING_WINDOWS, "lags": cmapss.LAG_STEPS, "sensor_cols": sensor_cols},
         "xgboost",
         None,  # filled in by a bounded search at call time
-        "add_rolling_lag_features_and_tune_search_space",
+        "tune_search_space",
         "Attempt 2 still failed the trust gate. Add rolling mean/std and lag features so "
         "the model sees degradation trajectory, not just a snapshot, and run a bounded "
         "hyperparameter search over gradient boosting rather than guessing parameters.",
     )
 
 
-def run_reflection_loop(data_dir: Path, max_revisions: int = MAX_REVISIONS) -> PipelineRunResult:
+def _plan_obj_to_internal(plan: PipelinePlan) -> tuple[dict, str, SearchSpace]:
+    feature_spec = {
+        "windows": tuple(plan.feature_spec.windows),
+        "lags": tuple(plan.feature_spec.lags),
+        "sensor_cols": list(plan.feature_spec.sensor_subset),
+    }
+    return feature_spec, plan.model_family.value, plan.search_space
+
+
+def _internal_to_plan_obj(
+    feature_spec: dict, model_family: str, hyperparams: dict | None, rationale: str
+) -> PipelinePlan:
+    """Build a structured PipelinePlan from a deterministic (or already-run
+    Claude) attempt, so the NEXT attempt can always hand Claude a proper
+    prior_plan for a revision call — regardless of whether the last
+    attempt's plan came from Claude or the fallback."""
+    hp = hyperparams or {}
+    fs = FeatureSpec(
+        windows=list(feature_spec.get("windows", ())),
+        lags=list(feature_spec.get("lags", ())),
+        sensor_subset=list(feature_spec.get("sensor_cols", [])),
+    )
+    ss = SearchSpace(
+        n_estimators_choices=[hp.get("n_estimators", 200)],
+        max_depth_choices=[hp.get("max_depth", 8)],
+        learning_rate_choices=[hp["learning_rate"]] if "learning_rate" in hp else None,
+        max_trials=1,
+    )
+    return PipelinePlan(
+        task_type="regression",
+        target_column="RUL",
+        asset_column="unit_number",
+        cycle_column="time_cycles",
+        feature_spec=fs,
+        model_family=ModelFamily(model_family),
+        search_space=ss,
+        validation_strategy="group_kfold_by_engine",
+        rationale=rationale[:600],
+    )
+
+
+def _resolve_plan(
+    attempt_number: int,
+    sensor_cols: list[str],
+    profile_summary: dict,
+    prior_plan_obj: PipelinePlan | None,
+    prior_evidence: dict | None,
+    use_claude: bool,
+):
+    """Try Claude (if enabled), fall back to the deterministic sequence on
+    any failure. Returns (feature_spec, model_family, hyperparams_or_None,
+    search_space_or_None, action, rationale, source, fallback_reason).
+    """
+    fallback_reason: str | None = None
+
+    if use_claude:
+        try:
+            from .claude_planner import propose_initial_plan, propose_revision
+
+            if attempt_number == 1:
+                plan_obj = propose_initial_plan(profile_summary, sensor_cols)
+                action, rationale = "initial_plan", plan_obj.rationale
+            else:
+                assert prior_plan_obj is not None and prior_evidence is not None
+                revision = propose_revision(prior_plan_obj, prior_evidence, sensor_cols)
+                plan_obj = revision.updated_plan
+                action, rationale = revision.action.value, revision.rationale
+
+            feature_spec, model_family, search_space = _plan_obj_to_internal(plan_obj)
+            return feature_spec, model_family, None, search_space, action, rationale, "claude", None, plan_obj
+
+        except Exception as exc:  # noqa: BLE001 - ClaudePlannerError or an import failure, both fall back
+            fallback_reason = f"{type(exc).__name__}: {exc}"
+            logger.warning(
+                "Claude planner unavailable on attempt %d, falling back: %s", attempt_number, fallback_reason
+            )
+
+    feature_spec, model_family, hyperparams, action, rationale = _next_plan(attempt_number, sensor_cols)
+    plan_obj = _internal_to_plan_obj(feature_spec, model_family, hyperparams, rationale)
+    return (
+        feature_spec,
+        model_family,
+        hyperparams,
+        None,
+        action,
+        rationale,
+        "deterministic_fallback",
+        fallback_reason,
+        plan_obj,
+    )
+
+
+def run_reflection_loop(
+    data_dir: Path, max_revisions: int = MAX_REVISIONS, use_claude: bool | None = None
+) -> PipelineRunResult:
+    """Run the full loop. ``use_claude=None`` (default) auto-detects: try
+    Claude only if ANTHROPIC_API_KEY is set in the environment. Pass
+    ``use_claude=False`` to force the deterministic path (used by the fast
+    test suite so results are reproducible without any network access).
+    """
+    if use_claude is None:
+        use_claude = bool(os.environ.get("ANTHROPIC_API_KEY"))
+
     train_df = cmapss.load_fd001_train(data_dir)
     test_df, true_rul = cmapss.load_fd001_test(data_dir)
     test_last = cmapss.last_cycle_per_engine(test_df)
-    # align true_rul to the engines actually present, in unit_number order
     y_test_true = true_rul.loc[test_last["unit_number"]].reset_index(drop=True)
 
     profile = cmapss.profile_dataset(train_df)
     sensor_cols = cmapss.usable_sensor_columns(profile)
+    profile_summary = {
+        "n_engines": profile.n_engines,
+        "n_rows": profile.n_rows,
+        "constant_sensors": profile.constant_sensors,
+        "near_constant_sensors": profile.near_constant_sensors,
+        "engine_life_stats": profile.engine_life_stats,
+        "leakage_risk_notes": profile.leakage_risk_notes,
+    }
 
     baseline_pred = mean_rul_baseline_predictions(train_df["RUL"], len(y_test_true))
     baseline_test_rmse = full_report(y_test_true, baseline_pred)["rmse"]
 
     result = PipelineRunResult(baseline_test_rmse=baseline_test_rmse)
-    prior_evidence = None
+    prior_plan_obj: PipelinePlan | None = None
+    prior_evidence: dict | None = None
 
     for attempt_number in range(1, max_revisions + 2):
-        feature_spec, model_family, hyperparams, action, rationale = _next_plan(
-            attempt_number, sensor_cols, prior_evidence
-        )
+        (
+            feature_spec,
+            model_family,
+            hyperparams,
+            search_space,
+            action,
+            rationale,
+            source,
+            fallback_reason,
+            plan_obj_used,
+        ) = _resolve_plan(attempt_number, sensor_cols, profile_summary, prior_plan_obj, prior_evidence, use_claude)
 
         attempt_sensor_cols = feature_spec["sensor_cols"]
         engineered_train = cmapss.engineer_features(
@@ -172,12 +296,11 @@ def run_reflection_loop(data_dir: Path, max_revisions: int = MAX_REVISIONS) -> P
         engineered_test_last = cmapss.last_cycle_per_engine(engineered_test_last)
 
         feat_cols = cmapss.feature_columns(engineered_train, attempt_sensor_cols)
-        # attempt 1 uses only its quick sensor subset as "features" (no op
-        # settings, which carry ~no signal in FD001's single operating
-        # condition and would just add noise to a plain linear model)
-        if feature_spec is not None and attempt_number == 1:
+        if model_family == "linear_regression" and not feature_spec["windows"] and not feature_spec["lags"]:
+            # a plain linear model on just its sensor subset, no op settings
+            # (op settings carry ~no signal in FD001's single operating
+            # condition and would just add noise / near-collinearity)
             feat_cols = attempt_sensor_cols
-        # explicit leakage guard: the label-defining columns must never be features
         no_leakage = not ({"unit_number", "time_cycles"} & set(feat_cols))
 
         X_train = engineered_train[feat_cols]
@@ -186,9 +309,14 @@ def run_reflection_loop(data_dir: Path, max_revisions: int = MAX_REVISIONS) -> P
         X_test_last = engineered_test_last[feat_cols]
 
         if hyperparams is None:
-            hyperparams, _ = bounded_random_search(
-                model_family, X_train, y_train, groups_train, max_trials=6
-            )
+            if search_space is not None:
+                hyperparams, _ = bounded_search_from_space(
+                    model_family, search_space, X_train, y_train, groups_train
+                )
+            else:
+                hyperparams, _ = bounded_random_search(
+                    model_family, X_train, y_train, groups_train, max_trials=6
+                )
 
         attempt_result, _model = run_attempt(
             attempt_number=attempt_number,
@@ -211,9 +339,20 @@ def run_reflection_loop(data_dir: Path, max_revisions: int = MAX_REVISIONS) -> P
         )
 
         logged = LoggedAttempt(
-            result=attempt_result, gate=gate, revision_action=action, revision_rationale=rationale
+            result=attempt_result,
+            gate=gate,
+            revision_action=action,
+            revision_rationale=rationale,
+            plan_source=source,
+            fallback_reason=fallback_reason,
         )
         result.attempts.append(logged)
+
+        # keep a structured plan object for the next Claude revision call,
+        # regardless of whether THIS attempt's plan came from Claude or
+        # the deterministic fallback
+        prior_plan_obj = _internal_to_plan_obj(feature_spec, model_family, hyperparams, rationale)
+        prior_evidence = gate.as_evidence()
 
         if gate.passed:
             result.promoted = True
@@ -221,7 +360,6 @@ def run_reflection_loop(data_dir: Path, max_revisions: int = MAX_REVISIONS) -> P
             result.stopped_reason = "trust_gate_passed"
             return result
 
-        prior_evidence = gate.as_evidence()
         if attempt_number == max_revisions + 1:
             result.stopped_reason = "max_revisions_exhausted"
 

@@ -46,3 +46,20 @@ def test_reflection_loop_retries_after_a_genuinely_weak_first_attempt():
 def test_reflection_loop_never_exceeds_max_revisions():
     result = run_reflection_loop(DATA_DIR)
     assert len(result.attempts) <= MAX_REVISIONS + 1
+
+
+@pytest.mark.slow
+def test_use_claude_true_without_api_key_falls_back_and_says_why(monkeypatch):
+    """The resilience requirement from the build plan: a missing API key
+    (same failure shape as a rate limit or outage) must fall back to the
+    deterministic planner and must NOT block the run."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    result = run_reflection_loop(DATA_DIR, use_claude=True)
+
+    first = result.attempts[0]
+    assert first.plan_source == "deterministic_fallback"
+    assert first.fallback_reason is not None
+    assert "ANTHROPIC_API_KEY" in first.fallback_reason
+    # the run must still complete and reach the same promotable result as
+    # the pure-deterministic path
+    assert result.promoted is True

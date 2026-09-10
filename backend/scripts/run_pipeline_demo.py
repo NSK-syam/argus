@@ -27,6 +27,11 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-dir", default=None)
     parser.add_argument("--json-out", default=None, help="optional path to dump full JSON results")
+    parser.add_argument(
+        "--use-claude",
+        action="store_true",
+        help="try the live Claude planner (needs ANTHROPIC_API_KEY); falls back automatically on any failure",
+    )
     args = parser.parse_args()
 
     if args.data_dir:
@@ -35,8 +40,9 @@ def main() -> None:
         data_dir = Path(__file__).resolve().parents[2] / "data" / "cmapss"
 
     print(f"Loading FD001 from {data_dir} ...")
+    use_claude = args.use_claude or None  # None -> auto-detect via ANTHROPIC_API_KEY
     t0 = time.time()
-    result = run_reflection_loop(data_dir)
+    result = run_reflection_loop(data_dir, use_claude=use_claude)
     elapsed = time.time() - t0
 
     print()
@@ -47,7 +53,9 @@ def main() -> None:
     for logged in result.attempts:
         r = logged.result
         print()
-        print(f"--- Attempt {r.attempt_number}: {logged.revision_action} ---")
+        print(f"--- Attempt {r.attempt_number}: {logged.revision_action} (plan source: {logged.plan_source}) ---")
+        if logged.fallback_reason:
+            print(f"  [fell back to deterministic planner: {logged.fallback_reason}]")
         print(f"  rationale: {logged.revision_rationale}")
         print(f"  model_family: {r.model_family}  hyperparams: {r.hyperparams}")
         print(f"  feature_spec: {r.feature_spec}  (n_features={r.n_features})")

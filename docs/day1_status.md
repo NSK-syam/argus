@@ -66,16 +66,44 @@ down to a deliberately minimal plan that produced the honest failure above.
 This is worth knowing for the live demo script: don't let attempt 1 quietly
 default to "use everything" or the retry disappears.
 
+## Update (same day, ahead of schedule): the live Claude adapter is wired in
+
+Originally scheduled Sep 14-17. Implemented and tested today instead:
+
+- `pipeline/plan_schema.py` — Pydantic `PipelinePlan` / `Revision` models,
+  the JSON-schema contract enforced via Anthropic forced tool-use, plus
+  `validate_plan_is_safe()` for domain rules a JSON schema alone can't
+  express (sensor subset must be a real usable sensor, xgboost needs a
+  learning-rate range, search space bounded to the compute budget, etc.)
+- `pipeline/claude_planner.py` — `propose_initial_plan()` /
+  `propose_revision()`. Claude sees only the deterministic data profile and
+  (on retries) the trust gate's structured evidence — never raw sensor rows,
+  never chain-of-thought. Any failure (no key, network error, malformed
+  response, invalid/unsafe plan) raises `ClaudePlannerError`.
+- `orchestrator.py` now tries Claude first (when `ANTHROPIC_API_KEY` is set,
+  or when `use_claude=True` is forced) and falls back to the exact same
+  deterministic sequence on any failure — logging *why* it fell back
+  (`LoggedAttempt.fallback_reason`) rather than failing silently.
+- 8 new tests (`test_claude_planner.py`) mock the Anthropic client to prove
+  the parsing/validation/fallback contract without needing a real key or
+  network access, plus an orchestrator-level test that forces
+  `use_claude=True` with no key set and confirms the run still completes
+  and still promotes a model.
+- **This sandbox has no `ANTHROPIC_API_KEY` for the project**, so the live
+  path is untested against the real API — only against mocked responses.
+  The first real run with a key should be treated as a smoke test, not
+  assumed to work purely because the mocks pass.
+
 ## Not yet done (tracked against the schedule, nothing here blocks the idea submission)
 
 - FastAPI endpoints, SQLAlchemy models, SSE event stream — Sep 14-17
-- Live Claude adapter for the Planner/Critic (schema-constrained, given
-  only trust-gate evidence + metrics, never raw sensor rows) — Sep 14-17
 - SHAP explanations, MLflow logging wired into the loop, model
   registry/promotion endpoint — Sep 21-23
 - Next.js frontend (5 views), held-out engine replay stream — Sep 18-23
 - Drift detection (explicitly Tier-2/deferred per the plan) — only if time
   remains after the core flow passes acceptance tests
+- Real (non-mocked) verification of the Claude adapter once an
+  `ANTHROPIC_API_KEY` is available
 
 ## Next recommended step
 
