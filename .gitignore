@@ -10,3 +10,11 @@ data/first_run_results.json
 *.egg-info/
 .DS_Store
 .env
+.env.local
+
+# local dev DB / MLflow store / trained model artifacts -- all regenerated
+# by running the app or the test suite, never source
+backend/argus.db
+backend/mlflow.db
+backend/artifacts/
+mlruns/

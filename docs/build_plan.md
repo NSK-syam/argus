@@ -127,3 +127,19 @@ Cut in this order if schedule slips: drift monitoring, generic uploads, visual p
   starts attempt 1 with a minimal, genuinely defensible plan (linear
   regression on 4 classically-informative sensors) so the "visibly revises a
   failed pipeline" success criterion is met honestly rather than staged.
+- Still Sep 10, and everything through the Sep 21-23 checklist items is done:
+  the live Claude adapter (fail-closed, 8 mocked-client tests plus a real
+  orchestrator-level fallback test), the full FastAPI service layer (all 6
+  endpoints/routers from "Interfaces and Data Flow" above, SQLAlchemy
+  persistence, SSE for both run progress and engine replay), SHAP
+  explanations (global + per-prediction, template-narrated), MLflow logging
+  of every attempt, the deterministic promotion gate enforced server-side
+  (409 on a failing model, human-confirmed-only promotion with an audit
+  record), and the Next.js frontend covering all five views. Docker Compose
+  (Postgres + a dedicated-Dockerfile MLflow service + backend + frontend)
+  was built and run against a real Docker daemon, including verifying the
+  backend reaches MLflow by its actual Docker-network hostname. The only
+  items from the schedule still open are generic-CSV-upload training support
+  and drift detection — both explicitly Tier-2/optional per this plan's own
+  cut order. See `docs/day1_status.md` for the full log and `docs/proof/`
+  for a screenshot/GIF walkthrough of the running system.

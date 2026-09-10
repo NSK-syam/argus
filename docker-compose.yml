@@ -1,8 +1,6 @@
-# Local dev stack. Frontend and a live inference/deploy service are added
-# in the Sep 18-27 build window (see docs/day1_status.md); today this
-# brings up the backend, Postgres, and MLflow so the ML pipeline has
-# somewhere to persist runs.
-version: "3.9"
+# Local dev stack: Postgres, MLflow, the FastAPI backend, and the Next.js
+# frontend. See docs/day1_status.md for what's been verified against a real
+# Docker daemon vs. what's a sandbox-only limitation of this dev environment.
 
 services:
   postgres:
@@ -17,13 +15,7 @@ services:
       - pgdata:/var/lib/postgresql/data
 
   mlflow:
-    image: python:3.11-slim
-    working_dir: /mlflow
-    command: >
-      bash -c "pip install --no-cache-dir mlflow psycopg2-binary &&
-               mlflow server --host 0.0.0.0 --port 5000
-               --backend-store-uri postgresql://argus:argus@postgres/argus
-               --default-artifact-root /mlflow/artifacts"
+    build: ./mlflow
     ports:
       - "5000:5000"
     volumes:
@@ -45,6 +37,18 @@ services:
     depends_on:
       - postgres
       - mlflow
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # the browser calls the backend directly, so this must be reachable
+        # from wherever the browser runs -- localhost:8000 for local dev.
+        NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
 
 volumes:
   pgdata:

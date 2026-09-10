@@ -94,21 +94,108 @@ Originally scheduled Sep 14-17. Implemented and tested today instead:
   The first real run with a key should be treated as a smoke test, not
   assumed to work purely because the mocks pass.
 
+## Update (same day, still ahead of schedule): the full FastAPI service layer
+
+Originally scheduled Sep 14-23. Implemented and tested today instead — the
+entire backend service surface a frontend (or a judge's curl command) would
+hit is real and running, not stubbed:
+
+- **SQLAlchemy 2.0 models + persistence** (`db/models.py`): `Dataset`,
+  `PipelineRun`, `Attempt`, `ModelVersion`, `Deployment`. Every attempt the
+  reflection loop makes is persisted, not just the winner.
+- **5 routers** (`api/{datasets,runs,models,predict,replay}.py`):
+  - `POST /api/v1/datasets` (bundled FD001) and `/datasets/upload` (generic
+    CSV, size/row-capped, 24h expiry, explicitly not yet wired to the
+    training loop) + `GET` list/detail.
+  - `POST /api/v1/runs` starts a background-threaded reflection-loop run
+    (capped concurrency via a semaphore), `GET /api/v1/runs/{id}` and
+    `GET /api/v1/runs/{id}/events` (SSE, live per-attempt progress),
+    `POST /api/v1/runs/{id}/retry` for a failed run.
+  - `POST /api/v1/models/{id}/promote` — **enforces the trust gate at the
+    API layer, not just in the training loop**: a model that failed the
+    gate is refused with 409 regardless of what a client asks for.
+  - `POST /api/v1/predict` — real inference against a promoted model, with
+    the conformal interval, the RUL≤30 warning flag, and a live SHAP
+    explanation of that one prediction.
+  - `GET /api/v1/replay/engines` + `GET /api/v1/replay/{model}/{engine}/events`
+    — the "watch risk climb, explained in real time" demo moment, SSE
+    streaming real held-out FD001 test-engine cycles (not synthetic) through
+    a stored model, with true RUL back-calculated from the official
+    `RUL_FD001.txt` labels.
+- **SHAP explainability** (`pipeline/explain.py`): tree explainer for
+  RF/XGBoost, generic explainer otherwise, global importance + per-prediction
+  narration — narration is template text describing real computed SHAP
+  numbers, never LLM-generated.
+- **MLflow logging** (`pipeline/mlflow_logging.py`): every attempt logged as
+  its own run, wrapped so a logging failure can never break a real result.
+- **`test_api.py`**: one comprehensive end-to-end test (create dataset →
+  start run → poll to completion → assert the honest attempt-1-fails/
+  attempt-2-passes retry now shows up over HTTP → promote refused on the
+  failing model (409) → promote accepted on the passing model → predict →
+  replay stream) plus upload-limits, unknown-model-404, and
+  upload-dataset-rejected-for-training tests. All passing against the real
+  app and a real (temp, isolated) SQLite DB — verified first via manual
+  live curl against a running `uvicorn` process, then via the pytest
+  version of those same checks.
+
+## Update (same day): docker-compose stack verified, with one honest finding
+
+Brought the full local dev stack (Postgres, MLflow, backend) up with real
+Docker. Two things worth recording plainly rather than glossing over:
+
+- **This sandbox's own network proxy blocked a live `docker compose up`**:
+  this cloud sandbox routes outbound HTTPS through a proxy with a
+  self-signed CA that the host trusts but that freshly-built containers do
+  not, by default, causing `pip install` inside `docker build`/`docker run`
+  to fail with a certificate error. This is an artifact of *this
+  development sandbox only* — a normal machine, or a real CI/cloud host,
+  has no such proxy in the way. It was confirmed structurally sandbox-only
+  by temporarily trusting the sandbox's own CA inside a throwaway image
+  variant (never committed) and rebuilding: every dependency in
+  `backend/requirements.txt` and the new `mlflow/Dockerfile` installs
+  cleanly and both services boot and serve correctly once that one
+  sandbox-specific trust gap is bridged.
+- **A real, permanent improvement while investigating this**: the `mlflow`
+  service previously installed its dependencies with a runtime
+  `pip install` embedded in the compose `command:` against a bare
+  `python:3.11-slim` image — functionally fine, but it re-downloads and
+  reinstalls everything on every `docker compose up` and couples startup
+  time to network/registry health. It now has its own `mlflow/Dockerfile`
+  that bakes `mlflow`+`psycopg2-binary` in at build time (`build: ./mlflow`
+  in `docker-compose.yml`), matching the backend's own pattern. Verified:
+  the image builds cleanly, the server starts and serves `/health` (200),
+  and — the check that actually matters, since the backend reaches it as
+  `http://mlflow:5000` rather than via `localhost` — it answers correctly
+  when queried by its Docker-network hostname from another container, the
+  exact path the backend uses in production. (MLflow 3.x logs a
+  "localhost-only" security-middleware notice on startup; that governs its
+  browser UI, not the tracking API the backend calls, which was confirmed
+  reachable cross-container.)
+- The backend image was also run standalone (`docker run ... argus-backend`)
+  and its `/health` endpoint confirmed 200 inside a real container, not just
+  under `uvicorn` directly or `TestClient`.
+- On a normal machine (no sandbox proxy in the way), `docker compose up`
+  should work out of the box with no changes needed beyond what's already
+  committed.
+
 ## Not yet done (tracked against the schedule, nothing here blocks the idea submission)
 
-- FastAPI endpoints, SQLAlchemy models, SSE event stream — Sep 14-17
-- SHAP explanations, MLflow logging wired into the loop, model
-  registry/promotion endpoint — Sep 21-23
-- Next.js frontend (5 views), held-out engine replay stream — Sep 18-23
+- Next.js frontend (5 views) — Sep 18-23, starting now
+- Generic CSV upload wired into the training loop (currently accepted and
+  stored, but only the bundled FD001 dataset can start a run) — a
+  deliberate Tier-2 scope cut per the plan, revisit only if time remains
 - Drift detection (explicitly Tier-2/deferred per the plan) — only if time
-  remains after the core flow passes acceptance tests
+  remains after the core flow and frontend pass acceptance tests
 - Real (non-mocked) verification of the Claude adapter once an
-  `ANTHROPIC_API_KEY` is available
+  `ANTHROPIC_API_KEY` is available — the fail-closed contract is proven via
+  8 mocked-client tests, but no live-API smoke test has run yet
 
 ## Next recommended step
 
-Trim `docs/architecture.md` + this file into the Project Summary field on
-the HackerEarth submission form ahead of the Sep 13/14 cutoff, and attach
-the `scripts/run_pipeline_demo.py` console output (or a short recording of
-it) as proof-of-concept — most competing idea submissions will be text
-only; this one has a real, rerunnable result behind it.
+Build the minimal Next.js frontend against the now-verified real API
+surface, then trim `docs/architecture.md` + this file into the Project
+Summary field on the HackerEarth submission form ahead of the Sep 13/14
+cutoff, attaching the `scripts/run_pipeline_demo.py` console output (or a
+short recording of the replay SSE stream) as proof-of-concept — most
+competing idea submissions will be text only; this one has a real,
+rerunnable, now end-to-end-tested system behind it.
