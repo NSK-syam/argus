@@ -315,3 +315,62 @@ beyond the free sqlite tier is wanted) isn't something this session can do
 on its own — those are new third-party account authorizations. Everything
 needed to go from "account connected" to "live URL" is written down and
 verified in `docs/DEPLOYMENT.md`.
+
+## Day 2 continued — real findings from an actual live-key smoke test
+
+The user provided a real Anthropic API key so the live Claude planner path
+(previously verified only against mocks — see `tests/test_claude_planner.py`)
+could be exercised for real, not just simulated. Ran the actual
+`run_reflection_loop(..., use_claude=True)` against real FD001 data with a
+real key. This surfaced two genuine bugs that no mocked test could have
+caught, because both depend on what a real model actually returns:
+
+1. **A real revision's rationale exceeded the schema's 600-character cap.**
+   The client-side Pydantic validation rejected the entire revision over
+   prose length alone, silently falling back to the deterministic planner
+   on attempt 3 — precisely the attempt meant to showcase the live planner
+   responding to real trust-gate evidence. Rationale text is narrative
+   explanation, not a safety-relevant field (unlike `task_type` /
+   `target_column` / `validation_strategy`, which are correctly rejected
+   outright), so there's no reason a valid plan should be discarded over
+   how long its explanation ran. Fixed by truncating an overlong rationale
+   (on both `PipelinePlan` and `Revision`) instead of rejecting it, with a
+   `field_validator(mode="before")` in `plan_schema.py`, plus a one-line
+   nudge in the system prompt asking Claude to stay under 600 characters
+   in the first place.
+
+2. **A real revision's `search_space` used hyperparameter values with no
+   ceiling.** `SearchSpace.n_estimators_choices` / `max_depth_choices` /
+   `learning_rate_choices` only ever bounded the *count* of choices
+   (`max_length=4`), never the *magnitude* of any individual value — noth
+   ing stopped a proposal like `n_estimators=5000`, and
+   `bounded_search_from_space` (`app/ml/data/baseline.py`) feeds those
+   values straight into real model fits with no clamp. A real Claude
+   revision did exactly this: one live attempt-3 search was still training
+   after nearly 30 minutes on this dataset, on hardware this sandbox has
+   (2 vCPUs) — a genuine way the plan's own "bounded, <=8-trial search"
+   compute budget could be blown through, not a hypothetical edge case.
+   Fixed by adding real numeric bounds (`n_estimators` 25-400, `max_depth`
+   2-15, `learning_rate` 0.01-0.3 — matching, with headroom, the
+   deterministic fallback's own hardcoded ranges) enforced via Pydantic
+   `Annotated[..., Field(ge=..., le=...)]` on every list item, plus the
+   same system-prompt nudge.
+
+Added `backend/tests/test_plan_schema.py` (9 new tests) as fast,
+deterministic regression coverage for both findings, so future changes to
+the schema can't silently reintroduce either bug without a live key.
+Re-ran the full suite clean: **49 passed** (40 prior + 9 new). Re-ran the
+live reflection loop twice more after each fix: confirmed attempts 1-2 no
+longer trigger any rationale-driven fallback, and attempt 3 no longer
+gets rejected at the validation step before training even starts (it
+proceeds straight into real training instead of an instant fallback,
+confirming the bounds are actually enforced) — the run's absolute
+wall-clock time for a Claude-driven attempt 3 on this specific 2-vCPU
+sandbox can still be a few minutes when Claude picks richer-but-in-bounds
+settings, which is expected on this hardware and does not affect the
+plan's actual timing requirement (that 90-second bar is scoped to the
+*preloaded* demo, which never runs live training).
+
+The live key was written to a git-ignored `backend/.env` for this test
+only, never committed, never logged, and used solely to exercise this one
+code path.

@@ -46,8 +46,11 @@ SYSTEM_PROMPT = (
     "only a deterministic data profile and, on retries, structured trust-gate evidence "
     "(metrics and which specific checks failed). Propose a modeling plan (or, on a retry, "
     "exactly ONE revision from an explicit allowlist) by calling the provided tool. Always "
-    "call the tool -- never respond with plain text. Keep rationale concise and grounded "
-    "only in the evidence given; do not invent sensor semantics you were not told."
+    "call the tool -- never respond with plain text. Keep rationale concise (under 600 "
+    "characters) and grounded only in the evidence given; do not invent sensor semantics "
+    "you were not told. Keep search_space values inside the tool schema's stated "
+    "minimum/maximum on every field -- this is a bounded, cheap search on a small dataset, "
+    "not a large-scale tuning job, and values outside the schema's bounds will be rejected."
 )
 
 

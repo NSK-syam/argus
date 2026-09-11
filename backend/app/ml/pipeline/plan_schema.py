@@ -11,11 +11,28 @@ left to validate is domain-level sanity (e.g. cycle counts, dedup), which
 from __future__ import annotations
 
 from enum import Enum
+from typing import Annotated
 
 from pydantic import BaseModel, Field, field_validator
 
 # Keep this in sync with app.ml.data.cmapss.SENSOR_COLS
 _ALL_SENSOR_COLS = [f"sensor_{i}" for i in range(1, 22)]
+
+_RATIONALE_MAX_LENGTH = 600
+
+
+def _truncate_rationale(v: object) -> object:
+    """Trim an overlong rationale instead of rejecting the whole plan over
+    prose length. Found via a real (non-mocked) Claude API call: the model
+    is told to "keep rationale concise" but nothing stops it from running a
+    little over the schema's max_length on a genuine response, and rationale
+    text is narrative explanation, not a safety-relevant field -- unlike
+    task_type/target_column/validation_strategy above, there's no reason a
+    live plan that is otherwise valid should fall back to the deterministic
+    planner just because its explanation ran long."""
+    if isinstance(v, str) and len(v) > _RATIONALE_MAX_LENGTH:
+        return v[: _RATIONALE_MAX_LENGTH - 3].rstrip() + "..."
+    return v
 
 
 class ModelFamily(str, Enum):
@@ -57,12 +74,33 @@ class FeatureSpec(BaseModel):
         return v
 
 
+#: Numeric bounds on each individual hyperparameter *value* Claude may
+#: propose. Found via a real (non-mocked) Claude API call: max_trials was
+#: already capped at 8, but nothing bounded how expensive a single trial
+#: could be -- only the *count* of choices was capped (max_length=4), not
+#: their *magnitude*. A live revision proposed a search space with values
+#: well outside the deterministic fallback's own range (n_estimators up to
+#: 350, max_depth up to 12) and turned one "bounded, <=8 trial" search into
+#: a run that was still going after nearly 30 minutes on this dataset --
+#: a real, reproducible way the plan's own compute budget could be blown
+#: through, not a hypothetical. These ranges give real headroom over what
+#: the deterministic fallback uses while still ruling out pathological
+#: values.
+_N_ESTIMATORS_BOUNDS = (25, 400)
+_MAX_DEPTH_BOUNDS = (2, 15)
+_LEARNING_RATE_BOUNDS = (0.01, 0.3)
+
+
 class SearchSpace(BaseModel):
-    n_estimators_choices: list[int] = Field(min_length=1, max_length=4)
-    max_depth_choices: list[int] = Field(min_length=1, max_length=4)
-    learning_rate_choices: list[float] | None = Field(
-        default=None, description="only used when model_family == xgboost"
+    n_estimators_choices: list[Annotated[int, Field(ge=_N_ESTIMATORS_BOUNDS[0], le=_N_ESTIMATORS_BOUNDS[1])]] = (
+        Field(min_length=1, max_length=4)
     )
+    max_depth_choices: list[Annotated[int, Field(ge=_MAX_DEPTH_BOUNDS[0], le=_MAX_DEPTH_BOUNDS[1])]] = Field(
+        min_length=1, max_length=4
+    )
+    learning_rate_choices: (
+        list[Annotated[float, Field(ge=_LEARNING_RATE_BOUNDS[0], le=_LEARNING_RATE_BOUNDS[1])]] | None
+    ) = Field(default=None, description="only used when model_family == xgboost")
     max_trials: int = Field(ge=1, le=8, description="bounded per the plan's compute budget")
 
 
@@ -75,7 +113,12 @@ class PipelinePlan(BaseModel):
     model_family: ModelFamily
     search_space: SearchSpace
     validation_strategy: str = Field(description="must be 'group_kfold_by_engine'")
-    rationale: str = Field(max_length=600)
+    rationale: str = Field(max_length=_RATIONALE_MAX_LENGTH)
+
+    @field_validator("rationale", mode="before")
+    @classmethod
+    def _rationale_truncated(cls, v: object) -> object:
+        return _truncate_rationale(v)
 
     @field_validator("task_type")
     @classmethod
@@ -105,7 +148,12 @@ class PipelinePlan(BaseModel):
 class Revision(BaseModel):
     action: RevisionAction
     updated_plan: PipelinePlan
-    rationale: str = Field(max_length=600)
+    rationale: str = Field(max_length=_RATIONALE_MAX_LENGTH)
+
+    @field_validator("rationale", mode="before")
+    @classmethod
+    def _rationale_truncated(cls, v: object) -> object:
+        return _truncate_rationale(v)
 
 
 def validate_plan_is_safe(plan: PipelinePlan, usable_sensor_cols: list[str]) -> list[str]:
