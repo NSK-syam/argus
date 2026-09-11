@@ -1,8 +1,17 @@
 # --- implemented and exercised by the current code (backend/app/ml, tests) ---
-pandas>=2.2
-numpy>=1.26
-scikit-learn>=1.4
-xgboost>=2.0
+# pandas/numpy/scikit-learn/xgboost are pinned EXACTLY (not >=) because
+# backend/app/demo_bundle/ ships real pickled model artifacts -- a clean-
+# machine verification pass found that an unpinned `scikit-learn>=1.4`
+# resolves to whatever is newest on the day someone installs it, which
+# raised InconsistentVersionWarning against the committed demo bundle
+# (built with 1.8.0) the moment pip picked up 1.9.1. Pinning keeps a
+# fresh `pip install` reproducing the exact environment the bundle and
+# every documented benchmark number (test RMSE 18.42, etc.) were
+# generated with.
+pandas==3.0.2
+numpy==2.4.4
+scikit-learn==1.8.0
+xgboost==3.2.0
 pytest>=8.0
 pydantic>=2.6
 anthropic>=0.25

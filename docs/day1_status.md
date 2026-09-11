@@ -235,3 +235,35 @@ rerunnable, now end-to-end-tested system behind it.
   this down (seeded run has the honest fail/pass pair, failing model still
   refused at 409, passing model promotes/predicts/replays). Full suite:
   40 passed.
+
+## Day 2 continued — a real clean-machine verification pass
+
+Rather than trusting "it worked in the sandbox I've been developing in,"
+extracted the exact committed state (`git archive HEAD`, the same content
+that ships in the submitted zip) into a fresh directory and rebuilt
+everything from nothing: fresh `data/cmapss/` download, fresh Python venv +
+`pip install -r requirements.txt`, fresh `npm install`, both apps started
+on unused ports, full test suite, and the Playwright judge-flow timing —
+none of it reusing any state from the working dev environment.
+
+- **Full test suite in the fresh venv: 40 passed.**
+- **Cold judge-flow timing** (clean checkout, cold browser, no warm
+  caches): 1.3s to see the retry evidence, 1.4s to a promoted model,
+  **8.6s total** through a complete replay stream — against the plan's
+  90-second bar.
+- **Real finding, fixed**: the fresh `pip install` resolved
+  `scikit-learn` to 1.9.1 (whatever was newest on PyPI that moment) while
+  the committed `demo_bundle` models were pickled with 1.8.0, throwing
+  `InconsistentVersionWarning` on every load. `pandas`/`numpy`/
+  `scikit-learn`/`xgboost` in `requirements.txt` are now pinned to exact
+  versions (matching what the committed model artifacts were actually
+  built with) instead of `>=` floors, specifically because this repo
+  ships real pickled model artifacts whose loader cares about the exact
+  version that wrote them — re-verified: rebuilding from a totally fresh
+  venv with the pinned versions loads the bundle with zero warnings, and
+  the full suite still passes (222s clean run).
+- One transient `pip install` timeout against `files.pythonhosted.org`
+  mid-verification, resolved by retrying with a longer per-request
+  timeout — a one-off proxy hiccup in this development sandbox, not a
+  repository issue, and not something that changes anything about the
+  committed code.
