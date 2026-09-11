@@ -153,3 +153,54 @@ def test_run_against_upload_dataset_is_rejected(client: TestClient):
     ).json()
     resp = client.post("/api/v1/runs", json={"dataset_id": upload["id"]})
     assert resp.status_code == 400
+
+
+def test_preloaded_demo_run_is_seeded_and_usable_without_training(client: TestClient):
+    """The build plan's own success criterion: "a judge can run the
+    preloaded demonstration in under 90 seconds ... without waiting for
+    training." app/services/run_service.py:seed_demo_run() seeds a fixed
+    demo-seed-run at app startup from app/demo_bundle/ -- this proves it's
+    there, already succeeded, and fully usable with zero training calls."""
+    run = client.get("/api/v1/runs/demo-seed-run")
+    assert run.status_code == 200
+    body = run.json()
+    assert body["status"] == "succeeded"
+    assert len(body["attempts"]) == 2
+    assert body["attempts"][0]["gate_passed"] is False
+    assert body["attempts"][1]["gate_passed"] is True
+
+    model_versions = body["model_versions"]
+    failing_mv = next(mv for mv in model_versions if not mv["trust_gate_passed"])
+    passing_mv = next(mv for mv in model_versions if mv["trust_gate_passed"])
+
+    resp = client.post(f"/api/v1/models/{failing_mv['id']}/promote")
+    assert resp.status_code == 409
+
+    resp = client.post(f"/api/v1/models/{passing_mv['id']}/promote")
+    assert resp.status_code == 200
+    assert resp.json()["stage"] == "production"
+
+    detail = client.get(f"/api/v1/models/{passing_mv['id']}").json()
+    assert len(detail["shap_summary"]["global_importance"]) > 0
+
+    resp = client.post(
+        "/api/v1/predict",
+        json={
+            "model_version_id": passing_mv["id"],
+            "features": {c: 0.0 for c in detail["feature_columns"]},
+        },
+    )
+    assert resp.status_code == 200
+    assert "predicted_rul" in resp.json()
+
+    engines = client.get("/api/v1/replay/engines").json()["engines"]
+    with client.stream(
+        "GET", f"/api/v1/replay/{passing_mv['id']}/{engines[0]}/events", params={"speed": 1000}
+    ) as stream_resp:
+        assert stream_resp.status_code == 200
+        lines = []
+        for line in stream_resp.iter_lines():
+            lines.append(line)
+            if len(lines) >= 4:
+                break
+        assert "predicted_rul" in "\n".join(lines)

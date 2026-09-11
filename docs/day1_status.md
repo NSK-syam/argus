@@ -199,3 +199,39 @@ cutoff, attaching the `scripts/run_pipeline_demo.py` console output (or a
 short recording of the replay SSE stream) as proof-of-concept — most
 competing idea submissions will be text only; this one has a real,
 rerunnable, now end-to-end-tested system behind it.
+
+## Day 2 — Sep 11, 2026: a real demo video, and a finding from clean-machine verification
+
+- **Real demo video, not just screenshots.** Recorded the actual running
+  app with Playwright (video capture, not a mock) through the full flow —
+  dataset load, the honest attempt-1-fails/attempt-2-passes retry, SHAP,
+  promote, held-out replay — then cut it three ways with ffmpeg:
+  `docs/proof/argus_demo_40s.mp4` (~4.6x sped up, idea-phase attachment),
+  `argus_demo_90s.mp4` (~2x, prototype-phase demo slot), and
+  `argus_demo_full_180s.mp4` (untouched real time, including the actual
+  ~45-60s training wait). The GIF/PNG proof from Sep 10 is kept as a
+  lightweight fallback for forms that don't take video.
+- **Finding: the plan's own success criterion wasn't actually met.** The
+  plan states "a judge can run the preloaded demonstration in under 90
+  seconds ... without uploading data or waiting for training." The
+  precomputed demo bundle from Sep 10 (task: "bundle a precomputed FD001
+  run + model artifact for demo resilience") existed on disk but was never
+  wired into the API or frontend — every run, including the "preloaded"
+  one, actually triggered a live ~45-90s training loop. This surfaced
+  during a deliberate clean-machine-style verification pass, not from a
+  user report.
+- **Fix**: `app/ml/pipeline/demo_bundle.py` now saves *every* attempt's
+  model (previously only the winner), `scripts/build_demo_artifact.py`
+  captures all of them, and a new `run_service.seed_demo_run()` turns the
+  bundle into a real, already-`succeeded` `PipelineRun` (fixed id
+  `demo-seed-run`, with real `Attempt`/`ModelVersion` rows and real model
+  artifacts on disk) at backend startup — idempotent, never blocks startup
+  on a missing/corrupt bundle. The frontend home page checks for it and
+  shows a "⚡ preloaded demo — no waiting" banner that jumps straight to
+  it. Verified end to end with Playwright: **0.2s** from clicking the
+  banner to seeing the retry evidence, **7.2s** total including promote
+  and a full replay stream — against a 90-second requirement. A new test,
+  `test_preloaded_demo_run_is_seeded_and_usable_without_training`, pins
+  this down (seeded run has the honest fail/pass pair, failing model still
+  refused at 409, passing model promotes/predicts/replays). Full suite:
+  40 passed.

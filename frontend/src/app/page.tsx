@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { api, Dataset } from "@/lib/api";
+import { api, Dataset, DEMO_RUN_ID, PipelineRun } from "@/lib/api";
 import { Badge, Button, Card, Spinner } from "@/components/ui";
 
 const DEFAULT_GOAL =
@@ -15,6 +15,15 @@ export default function HomePage() {
   const [loadingDataset, setLoadingDataset] = useState(false);
   const [startingRun, setStartingRun] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [demoRun, setDemoRun] = useState<PipelineRun | null | undefined>(undefined);
+
+  // Check once, quietly, whether the backend has a preloaded demo run
+  // seeded (it does unless the demo bundle is missing) -- undefined while
+  // checking, null if unavailable, so the banner only ever appears when
+  // it can actually be used.
+  useEffect(() => {
+    api.getRun(DEMO_RUN_ID).then(setDemoRun).catch(() => setDemoRun(null));
+  }, []);
 
   async function loadDataset() {
     setLoadingDataset(true);
@@ -54,6 +63,29 @@ export default function HomePage() {
           deterministic trust gate; nothing is ever promoted on an LLM&apos;s say-so.
         </p>
       </div>
+
+      {demoRun && (
+        <Card className="border-accent-dim flex items-center justify-between gap-4 flex-wrap">
+          <div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <Badge tone="accent">⚡ preloaded demo</Badge>
+              <span className="text-sm text-muted">
+                already trained — no waiting
+              </span>
+            </div>
+            <p className="text-sm text-muted mt-1.5 max-w-xl">
+              A complete, already-run pipeline: attempt 1 honestly fails the
+              trust gate ({demoRun.attempts[0]?.test_metrics?.rmse.toFixed(1)}{" "}
+              RMSE), attempt 2 honestly passes it (
+              {demoRun.attempts[1]?.test_metrics?.rmse.toFixed(1)} RMSE) — jump
+              straight to promoting the model and replaying a held-out engine.
+            </p>
+          </div>
+          <Button onClick={() => router.push(`/runs/${DEMO_RUN_ID}`)}>
+            View preloaded demo →
+          </Button>
+        </Card>
+      )}
 
       <Card className="space-y-4">
         <div className="flex items-start justify-between gap-4 flex-wrap">

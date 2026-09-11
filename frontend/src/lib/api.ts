@@ -5,6 +5,13 @@
 export const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") || "http://localhost:8000";
 
+// Fixed id of the preloaded demo run the backend seeds at startup from
+// app/demo_bundle/ (see app/services/run_service.py:seed_demo_run) -- a
+// complete, already-succeeded run with the honest attempt-1-fails/
+// attempt-2-passes retry, so a judge can see the full flow (retry
+// evidence -> promote -> replay) with no live-training wait.
+export const DEMO_RUN_ID = "demo-seed-run";
+
 export interface DatasetProfile {
   n_rows: number;
   n_engines: number;

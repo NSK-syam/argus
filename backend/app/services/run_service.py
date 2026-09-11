@@ -25,6 +25,7 @@ from ..db import models
 from ..db.session import SessionLocal
 from ..ml.data import cmapss
 from ..ml.pipeline import explain
+from ..ml.pipeline import demo_bundle
 from ..ml.pipeline.mlflow_logging import log_attempt
 from ..ml.pipeline.orchestrator import LoggedAttempt, run_reflection_loop
 
@@ -33,6 +34,13 @@ logger = logging.getLogger(__name__)
 # The build plan requires the public backend to run one training job at a
 # time; settings.max_concurrent_runs defaults to 1.
 _run_slot = threading.Semaphore(settings.max_concurrent_runs)
+
+# Fixed IDs (not random uuids) for the seeded preloaded-demo dataset/run --
+# lets the frontend link straight to /runs/{DEMO_RUN_ID} and lets
+# seed_demo_run() check "does this already exist" with a plain db.get(),
+# idempotent across restarts without a separate "is this the demo" flag.
+DEMO_DATASET_ID = "demo-seed-dataset"
+DEMO_RUN_ID = "demo-seed-run"
 
 
 def create_dataset_from_bundled_fd001(db: Session) -> models.Dataset:
@@ -57,6 +65,121 @@ def create_dataset_from_bundled_fd001(db: Session) -> models.Dataset:
     db.commit()
     db.refresh(dataset)
     return dataset
+
+
+def seed_demo_run(db: Session) -> bool:
+    """Called once at startup (app/main.py's lifespan). Turns the
+    precomputed demo bundle (app/demo_bundle/, built offline by
+    scripts/build_demo_artifact.py) into a real, already-succeeded
+    PipelineRun with real Attempt/ModelVersion rows and real model
+    artifacts on disk -- so a judge who opens the app immediately sees the
+    honest attempt-1-fails/attempt-2-passes retry, can promote the passing
+    model, and can replay a real held-out engine, all without waiting for
+    a live ~45-90s training run. This is exactly the build plan's own
+    success criterion ("a judge can run the preloaded demonstration in
+    under 90 seconds ... without waiting for training").
+
+    Idempotent: fixed IDs mean a second call (e.g. a restart) is a no-op
+    once the demo run exists. Never raises -- a missing/corrupt bundle
+    just means no preloaded demo is offered; live runs are unaffected.
+    """
+    if db.get(models.PipelineRun, DEMO_RUN_ID) is not None:
+        return True  # already seeded
+
+    if not demo_bundle.bundle_exists(settings.demo_bundle_dir):
+        logger.info("no demo bundle at %s -- skipping preloaded-demo seed", settings.demo_bundle_dir)
+        return False
+
+    try:
+        bundle = demo_bundle.load_bundle(settings.demo_bundle_dir)
+        train_df = cmapss.load_fd001_train(settings.data_dir)
+        profile = cmapss.profile_dataset(train_df)
+
+        dataset = models.Dataset(
+            id=DEMO_DATASET_ID,
+            name="NASA C-MAPSS FD001 (preloaded demo)",
+            source="bundled_fd001",
+            schema_json={"columns": cmapss.ALL_COLS},
+            profile_json={
+                "n_engines": profile.n_engines,
+                "n_rows": profile.n_rows,
+                "constant_sensors": profile.constant_sensors,
+                "near_constant_sensors": profile.near_constant_sensors,
+                "engine_life_stats": profile.engine_life_stats,
+                "leakage_risk_notes": profile.leakage_risk_notes,
+            },
+            storage_path=str(settings.data_dir),
+            n_rows=profile.n_rows,
+        )
+        db.add(dataset)
+
+        run_result = bundle["run_result"] or {}
+        run = models.PipelineRun(
+            id=DEMO_RUN_ID,
+            dataset_id=DEMO_DATASET_ID,
+            goal="Predict remaining useful life (RUL) for FD001 turbofan engines.",
+            status="succeeded",
+            winning_attempt_number=run_result.get("promoted_attempt"),
+            stopped_reason=run_result.get("stopped_reason"),
+        )
+        db.add(run)
+
+        artifact_dir = settings.model_artifact_dir / DEMO_RUN_ID
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+
+        for entry in bundle["attempts"]:
+            n = entry["attempt_number"]
+            attempt = models.Attempt(
+                run_id=DEMO_RUN_ID,
+                attempt_number=n,
+                plan_json={"feature_spec": entry["feature_spec"], "model_family": entry["model_family"]},
+                model_family=entry["model_family"],
+                hyperparams_json=entry["hyperparams"],
+                validation_metrics_json=entry["validation_metrics"],
+                test_metrics_json=entry["test_metrics"],
+                conformal_coverage=entry["conformal_coverage"],
+                gate_json=entry["gate"],
+                gate_passed=entry["gate"]["passed"],
+                revision_action=entry["revision_action"],
+                revision_rationale=entry["revision_rationale"],
+                plan_source=entry["plan_source"],
+                fallback_reason=entry["fallback_reason"],
+            )
+            db.add(attempt)
+
+            artifact_path = artifact_dir / f"attempt-{n}.joblib"
+            joblib.dump(entry["model"], artifact_path)
+
+            shap_summary: dict = {}
+            try:
+                if entry["background_sample"]:
+                    bg = pd.DataFrame(entry["background_sample"])[entry["feature_columns"]]
+                    explainer = explain.build_explainer(entry["model"], bg, entry["model_family"])
+                    shap_summary = {"global_importance": explain.global_importance(explainer, bg)}
+            except Exception as exc:  # noqa: BLE001 - a SHAP failure must not block seeding
+                logger.warning("SHAP summary failed while seeding demo attempt %d: %s", n, exc)
+
+            db.add(
+                models.ModelVersion(
+                    run_id=DEMO_RUN_ID,
+                    attempt_number=n,
+                    model_family=entry["model_family"],
+                    artifact_path=str(artifact_path),
+                    feature_columns_json=entry["feature_columns"],
+                    conformal_q=entry["conformal_q"],
+                    shap_summary_json=shap_summary,
+                    trust_gate_passed=entry["gate"]["passed"],
+                    stage="shadow",
+                )
+            )
+
+        db.commit()
+        logger.info("seeded preloaded demo run %s (%d attempts)", DEMO_RUN_ID, len(bundle["attempts"]))
+        return True
+    except Exception:
+        db.rollback()
+        logger.exception("failed to seed preloaded demo run -- continuing without it")
+        return False
 
 
 def start_run(db: Session, dataset: models.Dataset, goal: str) -> models.PipelineRun:

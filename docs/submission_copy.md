@@ -68,6 +68,14 @@ with a chatbot skin:
   model that failed the five-check gate, regardless of who asks. The line
   between "an agent proposes" and "a fixed rule decides" is deliberate.
 
+A judge doesn't have to wait through a live training run to see any of
+this: the app seeds a **preloaded demo run** at startup from a bundled,
+precomputed result — opening the app shows a one-click "already trained —
+no waiting" path straight to the honest retry, promotion, and replay,
+verified end to end at 7 seconds total. Starting a fresh run against live
+training is also right there for anyone who wants to watch it happen from
+scratch.
+
 Once promoted, a model can be exercised two ways: **ad hoc prediction**
 against arbitrary feature values, and — the demo's centerpiece — **live
 replay of a real held-out FD001 test engine**, streamed cycle by cycle
@@ -123,14 +131,19 @@ See **Originality, licensing & attribution** below.
 
 ## Proof of concept attached
 
-- `docs/proof/argus_demo_walkthrough.gif` — a 9-frame walkthrough captured
-  from a real, unscripted run of the actual web app: load the real FD001
-  dataset → start a run → watch attempt 1 honestly fail the trust gate and
-  attempt 2 honestly pass it (with the real SHAP chart) → promote the
-  passing model → replay a real held-out test engine with a live
-  prediction/SHAP explanation.
-- `docs/proof/*.png` — the same moments as individual full-resolution
-  screenshots.
+- `docs/proof/argus_demo_40s.mp4` — a ~40-second screen recording (real
+  browser, real backend, sped up ~4.6x from real time, no cuts or staging)
+  for the idea-phase attachment: load the real FD001 dataset → start a run
+  → attempt 1 honestly fails the trust gate → attempt 2 honestly passes it,
+  with the real SHAP chart → promote → replay a real held-out engine.
+- `docs/proof/argus_demo_90s.mp4` — the same recording at a gentler ~2x
+  speed (~90s), for the prototype-phase demo slot.
+- `docs/proof/argus_demo_full_180s.mp4` — the unmodified, real-time
+  recording (~3 min, includes the actual ~45-60s model training wait) for
+  anyone who wants to see it with nothing sped up.
+- `docs/proof/argus_demo_walkthrough.gif` and `docs/proof/*.png` — the same
+  moments as a lightweight GIF and individual full-resolution screenshots,
+  for forms that don't accept video attachments.
 - `backend/scripts/run_pipeline_demo.py` — anyone can rerun the reflection
   loop from a bare terminal and get the same honest retry, no UI required.
 

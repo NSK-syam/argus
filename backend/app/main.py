@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .api import datasets, models as models_api, predict, replay, runs
 from .db.session import SessionLocal, init_db
-from .services.run_service import recover_interrupted_runs
+from .services.run_service import recover_interrupted_runs, seed_demo_run
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -32,6 +32,7 @@ async def lifespan(_app: FastAPI):
                 "recovered %d run(s) interrupted by a restart -- marked failed, retry via POST /api/v1/runs/{id}/retry",
                 recovered,
             )
+        seed_demo_run(db)
     finally:
         db.close()
     yield
