@@ -1,0 +1,31 @@
+# Render Blueprint for the Argus backend. Deploy: connect this repo at
+# https://dashboard.render.com/blueprints, Render reads this file and
+# proposes the service below. See docs/DEPLOYMENT.md for the full
+# checklist (this file alone won't give you a live URL -- it needs a
+# connected Render account, and the frontend deploys separately on
+# Vercel).
+#
+# Uses the free plan by default so nothing here can incur cost without a
+# deliberate upgrade in the Render dashboard. The free plan sleeps after
+# 15 minutes idle (a cold request takes ~30-60s to wake it) and its disk
+# is ephemeral -- fine for a demo/judge flow (the preloaded demo reseeds
+# itself on every boot from backend/app/demo_bundle/), not for data you
+# need to keep across deploys. For that, add a Render Postgres instance
+# and point DATABASE_URL / MLFLOW_TRACKING_URI at it instead of sqlite.
+
+services:
+  - type: web
+    name: argus-backend
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        value: sqlite:////opt/render/project/src/argus.db
+      - key: MLFLOW_TRACKING_URI
+        value: sqlite:////opt/render/project/src/mlflow.db
+      - key: ANTHROPIC_API_KEY
+        sync: false # set in the Render dashboard -- optional, the deterministic
+        # planner is used automatically whenever this is unset

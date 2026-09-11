@@ -267,3 +267,51 @@ none of it reusing any state from the working dev environment.
   timeout — a one-off proxy hiccup in this development sandbox, not a
   repository issue, and not something that changes anything about the
   committed code.
+
+## Day 2 continued — live URL deployment: prepared and build-verified, not yet live
+
+Checked what's actually available to deploy with, rather than assuming:
+searched the MCP connector registry for Vercel and Render — neither is
+connected to this session (both show as available integrations, not
+authorized ones). Supabase is connected, but only to two pre-existing
+projects unrelated to this one under a personal org — didn't provision
+anything new there without asking first.
+
+Prepared the full deployment path anyway, so connecting either account is
+the only remaining step:
+
+- **`render.yaml`** — a Render Blueprint for the backend (Docker web
+  service, free plan, `/health` healthcheck, `ANTHROPIC_API_KEY` left as an
+  optional dashboard secret since the deterministic planner covers its
+  absence).
+- **`backend/Dockerfile`** — fixed a real gap this uncovered: the image
+  had no FD001 data unless something bind-mounts it in (docker-compose does
+  this locally; Render has no equivalent). Added a build step that
+  downloads FD001 via Python's stdlib `urllib` and rebuilds the demo bundle
+  *during the image build*, so the image is self-contained. Used stdlib
+  instead of `curl` since `python:3.11-slim` doesn't guarantee `curl` is
+  present.
+- **`docs/DEPLOYMENT.md`** — the full checklist for connecting Render +
+  Vercel and going live, plus an optional persistent-Postgres upgrade path.
+
+**Verified against a real local Docker daemon, not just read through**:
+built the updated image end-to-end (pinned-dependency install, FD001
+download, demo-bundle rebuild, all inside the build), then ran a container
+from it with **zero volume mounts** and a bare sqlite `DATABASE_URL` —
+exactly the constraints a Render deploy has. Confirmed from logs and the
+API: `seed_demo_run()` fired at startup (`seeded preloaded demo run
+demo-seed-run (2 attempts)`), `/health` returned 200, `/api/v1/runs/demo-seed-run`
+came back `succeeded` with 2 attempts (gate `[False, True]`) and 2 model
+versions, and `/api/v1/datasets` served the real bundled FD001 dataset
+(20,631 rows, 100 engines) — proving the baked-in data isn't just present on
+disk but actually queryable through the app. Cleaned up the test container,
+image, and the sandbox-only CA-trust scaffolding used to reach PyPI/GitHub
+from inside this sandbox's Docker build (none of that is part of the
+committed Dockerfile).
+
+**What's left, and it needs the user**: connecting a Render account and a
+Vercel account (or provisioning a Supabase project, if persistent storage
+beyond the free sqlite tier is wanted) isn't something this session can do
+on its own — those are new third-party account authorizations. Everything
+needed to go from "account connected" to "live URL" is written down and
+verified in `docs/DEPLOYMENT.md`.
