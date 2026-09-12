@@ -30,8 +30,12 @@ npm run dev                            # http://localhost:3000
 
 Open `http://localhost:3000`: load the bundled FD001 dataset, start a run,
 watch the Planner→Trainer→Critic loop revise itself live, promote the model
-that passes the trust gate, then replay a held-out test engine cycle by
-cycle with live SHAP explanations.
+that passes the trust gate, then replay a real FD001 test engine cycle by
+cycle with live SHAP explanations. (See `docs/submission_copy.md`'s
+methodology disclosure: today the trust gate re-evaluates this same test
+set on every attempt, so it is not yet a strictly held-out check — a
+proper dev/calibration/gate-validation split is planned before the
+prototype-phase deadline.)
 
 Or, no server required — just the reflection loop in a terminal:
 
@@ -44,11 +48,10 @@ python3 scripts/run_pipeline_demo.py --use-claude \
 python3 -m pytest -v                             # full test suite
 ```
 
-Docker: `docker compose up` brings up Postgres + MLflow + the backend
-(`mlflow/Dockerfile` and `backend/Dockerfile` both bake their dependencies
-in at build time, verified against a real Docker daemon). The frontend
-container isn't wired into `docker-compose.yml` yet — run it with `npm run
-dev` per the quickstart above in the meantime.
+Docker: `docker compose up` brings up Postgres + MLflow + the backend + the
+frontend (`mlflow/Dockerfile`, `backend/Dockerfile`, and the frontend's
+Dockerfile build all bake their dependencies in at build time; the backend
+and Postgres/MLflow stack has been verified against a real Docker daemon).
 
 Attribution: the C-MAPSS FD001 dataset is NASA's Turbofan Engine
 Degradation Simulation Data Set (A. Saxena & K. Goebel, NASA Ames

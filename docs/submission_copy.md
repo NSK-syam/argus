@@ -43,13 +43,30 @@ check failed and by how much) and the Planner revises: a different model
 family, a different feature set. This is bounded (max two revisions) and
 logged as its own MLflow run at every step.
 
+**Methodology disclosure, stated plainly:** today the trust gate's RMSE and
+coverage checks are computed against the official FD001 test set on *every*
+attempt, and that same test-set score is what decides whether to retry or
+promote. Reused this way across iterative decisions, it is evaluation-driven
+model selection, not a single held-out check — so the specific RMSE numbers
+below describe what this reflection loop actually does today, not a
+leakage-free final evaluation. (This is distinct from the "leakage-safe,
+per-engine feature engineering and grouped cross-validation" claim above,
+which is about avoiding intra-engine leakage in feature computation and
+remains accurate on its own terms.) Before the prototype-phase deadline we
+are re-splitting the training engines into disjoint dev/calibration/gate-
+validation partitions so every iterative decision uses only held-in data,
+and touching the official test set exactly once, after the winning
+configuration is fixed.
+
 Run on the real NASA C-MAPSS FD001 turbofan dataset, this isn't staged: a
 genuinely reasonable first attempt (linear regression on the four sensors
-classical literature flags as most informative) honestly fails the gate at
-23.4 cycles RMSE; the Critic's revision (Random Forest, full sensor set)
-honestly passes at 18.4 cycles. Anyone can rerun it and get the same
-numbers — the repo includes both a one-command CLI demo and a full web app
-that reproduces this live.
+classical literature flags as most informative) fails the gate at 23.4
+cycles RMSE; the Critic's revision (Random Forest, full sensor set) passes
+at 18.4 cycles. Anyone can rerun it and get the same numbers — the repo
+includes both a one-command CLI demo and a full web app that reproduces
+this live. (As above: these are the current gate's own numbers, computed
+against the official test set on every attempt, not a one-shot held-out
+evaluation yet.)
 
 Two features push this past a "profile → train → explain, once" pipeline
 with a chatbot skin:
@@ -78,12 +95,14 @@ scratch.
 
 Once promoted, a model can be exercised two ways: **ad hoc prediction**
 against arbitrary feature values, and — the demo's centerpiece — **live
-replay of a real held-out FD001 test engine**, streamed cycle by cycle
-through the model via Server-Sent Events, each point carrying a conformal
-uncertainty interval, a remaining-life warning flag, and a live SHAP
-explanation narrated in plain language ("sensor_11 pushing predicted RUL
-up, contribution +15.4 cycles..."). It's real held-out data, not a
-synthetic signal built to look good.
+replay of a real FD001 test engine**, streamed cycle by cycle through the
+model via Server-Sent Events, each point carrying a conformal uncertainty
+interval, a remaining-life warning flag, and a live SHAP explanation
+narrated in plain language ("sensor_11 pushing predicted RUL up,
+contribution +15.4 cycles..."). It's real test-engine data, not a synthetic
+signal built to look good — though, per the disclosure above, that same
+test set already informed model selection via the trust gate, so it is not
+(yet) a held-out set in the strict sense.
 
 **The stack, end to end, is real and tested:** a SQLAlchemy-backed FastAPI
 service (datasets, SSE-streamed run progress, promotion enforcement,
@@ -109,8 +128,8 @@ tends to be trusted (or distrusted) by instinct rather than evidence.
 |---|---|
 | Fixed pipeline: profile → train → explain, once | A Planner→Trainer→Critic loop that revises its own plan on a genuine failure |
 | An LLM (or a person's gut) decides "good enough" | A fixed, five-check deterministic gate decides — the LLM only proposes, never approves |
-| "Our model trained successfully" as the demo | An honest retry, reproducible by anyone, shown live: attempt 1 fails at 23.4 RMSE, attempt 2 passes at 18.4 |
-| A synthetic stream tuned to look dramatic | Real held-out FD001 test-engine replay, unmodified, with real conformal intervals |
+| "Our model trained successfully" as the demo | An honest retry, reproducible by anyone, shown live: attempt 1 fails at 23.4 RMSE, attempt 2 passes at 18.4 (numbers from the current test-set-driven gate — see methodology disclosure above) |
+| A synthetic stream tuned to look dramatic | Real FD001 test-engine replay, unmodified, with real conformal intervals (not yet a strictly held-out set — see disclosure above) |
 | Chatbot bolted onto a script | An LLM adapter with a genuinely fail-closed contract — it can be swapped out entirely and nothing breaks |
 
 ## Technology stack
@@ -134,8 +153,9 @@ See **Originality, licensing & attribution** below.
 - `docs/proof/argus_demo_40s.mp4` — a ~40-second screen recording (real
   browser, real backend, sped up ~4.6x from real time, no cuts or staging)
   for the idea-phase attachment: load the real FD001 dataset → start a run
-  → attempt 1 honestly fails the trust gate → attempt 2 honestly passes it,
-  with the real SHAP chart → promote → replay a real held-out engine.
+  → attempt 1 fails the trust gate → attempt 2 passes it, with the real
+  SHAP chart → promote → replay a real FD001 test engine (see the
+  methodology disclosure above — not yet a strictly held-out evaluation).
 - `docs/proof/argus_demo_90s.mp4` — the same recording at a gentler ~2x
   speed (~90s), for the prototype-phase demo slot.
 - `docs/proof/argus_demo_full_180s.mp4` — the unmodified, real-time

@@ -374,3 +374,43 @@ plan's actual timing requirement (that 90-second bar is scoped to the
 The live key was written to a git-ignored `backend/.env` for this test
 only, never committed, never logged, and used solely to exercise this one
 code path.
+
+## Day 2 continued — methodology disclosure from an external code review
+
+An external review of the public repo (HEAD `2aee57d`) raised a real
+methodological finding worth recording plainly, not glossing over: the
+trust gate (`evaluate_trust_gate` in `pipeline/trust_gate.py`, called from
+`run_reflection_loop` in `pipeline/orchestrator.py`) computes its RMSE and
+conformal-coverage checks against the official FD001 *test* set on every
+single attempt, and that test-set score is what decides whether to retry
+or promote. Reused across iterative decisions like this, it is a form of
+evaluation-driven model selection, not a genuinely held-out check — so
+every "held-out" claim earlier in this doc (line 7, line 16, line 52) and
+in `docs/submission_copy.md` describes what the pipeline does today, not a
+leakage-free final evaluation. This does **not** affect the separate,
+correctly-handled claim that feature engineering itself is leakage-safe
+(rolling windows/lags computed strictly per-engine, verified in
+`cmapss.py`) — that is a different form of leakage than test-set reuse
+across selection decisions, and it remains accurate.
+
+Given the ~38-hour runway to the Sep 13 idea-phase deadline when this was
+found, the user explicitly chose to disclose this now (correcting the
+submission wording in `docs/submission_copy.md` and `README.md` rather
+than rewriting the pipeline under deadline pressure) and to do the real
+fix carefully before the Sep 27 prototype deadline: split the 100 training
+engines into disjoint dev/calibration/gate-validation partitions, run all
+retry/promotion decisions only against held-in data, touch the official
+test set exactly once after the winning configuration is fixed, and
+regenerate every bundled artifact, screenshot, video, and reported metric
+against that one-shot evaluation.
+
+The same review also flagged several deployment-readiness gaps (unbounded
+background threads per run request, `/predict` not checking model stage,
+non-idempotent model promotion, an unenforced upload-expiry promise, an
+always-200 `/health` check, an unpinned third-party data source in the
+Dockerfile) and smaller cleanup items (CORS wildcard, no CI workflow,
+partially-pinned dependencies, a stale docker-compose claim in the README,
+missing LICENSE/attribution file). All were independently verified against
+the actual code; fixes are tracked and being worked through after this
+disclosure, in the priority order the review itself suggested — safeguards
+and readiness before a public deploy.
