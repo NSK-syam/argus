@@ -1,0 +1,66 @@
+name: CI
+
+# Found missing in external code review: no CI meant a broken commit could
+# reach `master` unnoticed. Runs the same checks documented throughout
+# docs/day1_status.md (backend test suite, frontend lint + production
+# build) on every push/PR so they're enforced automatically, not just
+# something a person remembers to run locally.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Fetch the real NASA C-MAPSS FD001 dataset
+        # Same pinned-commit + SHA-256-verified source as backend/Dockerfile
+        # (see scripts/fetch_cmapss_data.py) -- most of the test suite is an
+        # end-to-end integration test against this real data, not mocks.
+        run: python3 scripts/fetch_cmapss_data.py ../data/cmapss
+
+      - name: Run backend test suite
+        run: python3 -m pytest -v
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Production build
+        # The browser calls the backend directly, so this only needs to be
+        # a real, reachable value at build time -- not the actual deployed
+        # backend (CI never talks to a live backend).
+        env:
+          NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+        run: npm run build
