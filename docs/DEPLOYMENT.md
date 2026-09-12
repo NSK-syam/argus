@@ -26,24 +26,41 @@ a stock Next.js app — but this is the fastest zero-cost path.
 2. Click **New Blueprint Instance**, connect this GitHub repo, and select
    the branch to deploy. Render finds `render.yaml` at the repo root
    automatically and proposes one service: `argus-backend`.
-3. Before the first deploy, open the service's **Environment** tab and,
-   optionally, set `ANTHROPIC_API_KEY` (the repo's own planner falls back to
-   a deterministic, non-LLM planning path automatically whenever this is
-   unset — it's a real judge-usable app either way, just without the
-   Claude-authored plan rationale). Nothing else needs to be set; every
-   other env var Render needs (`DATABASE_URL`, `MLFLOW_TRACKING_URI`) is
-   already in `render.yaml`.
+3. Before the first deploy, open the service's **Environment** tab. Two
+   env vars are `sync: false` in `render.yaml` and must be handled here:
+   - `ARGUS_CORS_ORIGINS` — you don't know the Vercel origin yet, so leave
+     it **unset for this first deploy** (the backend then defaults to `*`,
+     open). You will come back and set it in step 3 below.
+   - `ANTHROPIC_API_KEY` — **leave unset for a public demo.** The planner
+     falls back to a deterministic, non-LLM path automatically, and the
+     app is fully judge-usable without it. `render.yaml` also ships with
+     `ARGUS_ENABLE_LIVE_RUNS=false` and `ARGUS_ENABLE_UPLOADS=false`, so a
+     public URL can't be used to submit training jobs (and burn credits) or
+     store arbitrary uploads; only the preloaded demo run is exposed. Set a
+     key only on a private/judged deployment where you also flip
+     `ARGUS_ENABLE_LIVE_RUNS` to `true` and accept that cost.
+   Everything else (`DATABASE_URL`, `MLFLOW_TRACKING_URI`, the two safety
+   flags) is already in `render.yaml`.
 4. Deploy. The first build takes a few minutes — it installs the pinned
-   Python dependencies, then downloads the NASA C-MAPSS FD001 dataset and
-   rebuilds the demo model bundle *during the image build* (see "What
-   changed in the Dockerfile" below). Render then runs the container and
-   polls `/health` until it's up.
+   Python dependencies, then downloads the NASA C-MAPSS FD001 dataset
+   (pinned to a specific upstream commit and SHA-256-verified, see
+   `backend/scripts/fetch_cmapss_data.py`) and rebuilds the demo model
+   bundle *during the image build* (see "What changed in the Dockerfile"
+   below). Render then runs the container and polls **`/ready`** until it
+   passes. `/ready` is a real readiness check — DB reachable, FD001 files
+   present, demo bundle present, demo run seeded, and a trust-gate-passing
+   demo model whose artifact exists and loads — so a broken deploy fails
+   the health check visibly instead of reporting "healthy" while a judge's
+   first click would fail. (`/health` still exists as a plain liveness
+   probe.)
 5. Once live, note the backend's URL — something like
    `https://argus-backend-xxxx.onrender.com`. Confirm it works:
    ```
-   curl https://argus-backend-xxxx.onrender.com/health
+   curl https://argus-backend-xxxx.onrender.com/ready
    curl https://argus-backend-xxxx.onrender.com/api/v1/runs/demo-seed-run
    ```
+   The first call should return `"status": "ready"` with every check
+   `true`.
    The second call should come back with `"status": "succeeded"` and two
    attempts — that's the preloaded demo, already seeded at startup with no
    external data source needed.
@@ -74,11 +91,29 @@ it.
    deploy, and any change to it requires a redeploy to take effect.
 4. Deploy. No `vercel.json` is needed — Vercel's Next.js preset handles
    build and output automatically.
-5. Once live, open the Vercel URL and confirm the "preloaded demo" banner
-   on the home page loads and links through to `/runs/demo-seed-run`. If it
-   doesn't, the most likely cause is `NEXT_PUBLIC_API_BASE_URL` pointing at
-   the wrong host, or the Render service still asleep (first request will
-   be slow — see the free-tier note above).
+5. Once live, note the Vercel URL (e.g. `https://argus-xxxx.vercel.app`).
+
+## 3. Lock CORS to the Vercel origin and redeploy the backend
+
+The order matters: backend first (so the frontend has a URL to point at),
+frontend second (so you know its origin), then this step.
+
+1. Back in Render → `argus-backend` → **Environment**, set
+   `ARGUS_CORS_ORIGINS` to the exact Vercel origin from step 2.5 — scheme
+   and host, no path, no trailing slash, e.g.
+   `https://argus-xxxx.vercel.app`. Comma-separate if you also want a
+   preview/custom domain.
+2. Redeploy the backend (Render prompts for this on env changes). Until
+   this is done the backend accepts any origin, which works but isn't what
+   you want on a public URL.
+3. Open the Vercel URL and confirm the "preloaded demo" banner on the home
+   page loads and links through to `/runs/demo-seed-run`, and that
+   promote → predict → replay all work. If the page loads but API calls
+   fail, the most likely causes are `NEXT_PUBLIC_API_BASE_URL` pointing at
+   the wrong host, `ARGUS_CORS_ORIGINS` not matching the Vercel origin
+   exactly, or the Render service still asleep (first request will be
+   slow — see the free-tier note above). With live runs disabled, the
+   "start a new run" action returns HTTP 403 by design.
 
 ## What changed in the Dockerfile for this
 
@@ -107,7 +142,9 @@ container from it with *no volume mounts at all* and a bare sqlite
   the build (not at runtime),
 - `seed_demo_run()` ran at startup and logged `seeded preloaded demo run
   demo-seed-run (2 attempts)`,
-- `GET /health` → `200 {"status": "ok", ...}`,
+- `GET /health` → `200 {"status": "ok", ...}` (this predates `/ready`,
+  which is what `render.yaml` now polls; `/ready` was verified in a later
+  container run — see `docs/day1_status.md`),
 - `GET /api/v1/runs/demo-seed-run` → `status: succeeded`, 2 attempts, gate
   results `[False, True]` (the honest fail-then-pass retry), 2 model
   versions,
@@ -139,6 +176,20 @@ Two ways to get that Postgres instance:
   say the word and I'll provision a fresh project scoped to just this app,
   or you can create one yourself at <https://supabase.com/dashboard> and
   hand me the connection string.
+
+**Persistent DB + ephemeral disk is a real combination to get right.** A
+seeded demo run stores its model artifacts as `.joblib` files under
+`ARGUS_MODEL_ARTIFACT_DIR` on the container's disk. With a persistent
+Postgres and Render's ephemeral disk, a redeploy keeps the demo run's DB
+rows but wipes the files — an external code review pointed out that
+`seed_demo_run()` used to return early on "row already exists" and never
+recreate them, so `/predict` and `/replay` would fail after the first
+redeploy. That's now handled: on every startup, any demo model artifact
+missing from disk is re-dumped from the baked-in bundle, and `/ready` fails
+(503) unless a trust-gate-passing demo model's artifact both exists and
+loads. Live-run artifacts (a judge's own training run) still don't survive
+a redeploy on ephemeral disk — that needs a Render persistent disk or
+object storage, which is out of scope for the demo.
 
 Either way this is optional — the free sqlite setup is enough for a judge
 to run the full preloaded-demo flow (retry evidence → promote → replay),

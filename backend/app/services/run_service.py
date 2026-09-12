@@ -87,7 +87,12 @@ def seed_demo_run(db: Session) -> bool:
     just means no preloaded demo is offered; live runs are unaffected.
     """
     if db.get(models.PipelineRun, DEMO_RUN_ID) is not None:
-        return True  # already seeded
+        # Row exists, but the model artifacts it points at may not: with a
+        # persistent DB (Render Postgres / Supabase) and an ephemeral disk,
+        # a redeploy keeps the row and wipes the .joblib files, so /predict
+        # and /replay would fail while /ready still passed. Found in
+        # external code review. Re-dump any missing artifact from the bundle.
+        return _rehydrate_demo_artifacts(db)
 
     if not demo_bundle.bundle_exists(settings.demo_bundle_dir):
         logger.info("no demo bundle at %s -- skipping preloaded-demo seed", settings.demo_bundle_dir)
@@ -185,6 +190,78 @@ def seed_demo_run(db: Session) -> bool:
         return False
 
 
+def _rehydrate_demo_artifacts(db: Session) -> bool:
+    """For an already-seeded demo run, make sure every ModelVersion's
+    artifact actually exists on disk; re-dump missing ones from the bundle.
+    Returns True only if every demo artifact is present afterwards."""
+    versions = (
+        db.query(models.ModelVersion).filter(models.ModelVersion.run_id == DEMO_RUN_ID).all()
+    )
+    missing = [mv for mv in versions if not Path(mv.artifact_path).exists()]
+    if not missing:
+        return True
+    if not demo_bundle.bundle_exists(settings.demo_bundle_dir):
+        logger.error(
+            "%d demo model artifact(s) missing and no bundle at %s to restore them from",
+            len(missing),
+            settings.demo_bundle_dir,
+        )
+        return False
+    try:
+        bundle = demo_bundle.load_bundle(settings.demo_bundle_dir)
+        by_attempt = {entry["attempt_number"]: entry for entry in bundle["attempts"]}
+        for mv in missing:
+            entry = by_attempt.get(mv.attempt_number)
+            if entry is None:
+                logger.error("no bundle entry for demo attempt %d", mv.attempt_number)
+                return False
+            Path(mv.artifact_path).parent.mkdir(parents=True, exist_ok=True)
+            joblib.dump(entry["model"], mv.artifact_path)
+        logger.info("rehydrated %d missing demo model artifact(s) from the bundle", len(missing))
+        return True
+    except Exception:  # noqa: BLE001 - startup must not crash over this
+        logger.exception("failed to rehydrate demo model artifacts")
+        return False
+
+
+def demo_model_artifacts_ready() -> tuple[bool, str]:
+    """Readiness check used by /ready: is there a trust-gate-passing demo
+    model version whose artifact exists AND loads? Returns (ok, reason)."""
+    db = SessionLocal()
+    try:
+        passing = (
+            db.query(models.ModelVersion)
+            .filter(
+                models.ModelVersion.run_id == DEMO_RUN_ID,
+                models.ModelVersion.trust_gate_passed.is_(True),
+            )
+            .all()
+        )
+        if not passing:
+            return False, "no trust-gate-passing demo model version"
+        for mv in passing:
+            if not Path(mv.artifact_path).exists():
+                return False, f"artifact missing: {mv.artifact_path}"
+            try:
+                joblib.load(mv.artifact_path)
+            except Exception as exc:  # noqa: BLE001
+                return False, f"artifact failed to load: {mv.artifact_path}: {exc}"
+        return True, "ok"
+    finally:
+        db.close()
+
+
+class LiveRunsDisabledError(Exception):
+    """Raised by start_run when ARGUS_ENABLE_LIVE_RUNS is off. On a public
+    deployment anyone could otherwise submit expensive training jobs
+    continuously (and burn Claude credits if a key is configured) -- the
+    queue bound limits concurrency, not total cost. Found in external code
+    review. The preloaded demo run is unaffected."""
+
+
+_queue_lock = threading.Lock()
+
+
 class RunQueueFullError(Exception):
     """Raised by start_run when too many PipelineRuns are already
     pending+running. Found in external code review: _run_slot only ever
@@ -197,21 +274,33 @@ class RunQueueFullError(Exception):
 
 
 def start_run(db: Session, dataset: models.Dataset, goal: str) -> models.PipelineRun:
-    in_flight = (
-        db.query(models.PipelineRun)
-        .filter(models.PipelineRun.status.in_(("pending", "running")))
-        .count()
-    )
-    if in_flight >= settings.max_queued_runs:
-        raise RunQueueFullError(
-            f"{in_flight} run(s) already pending/running (limit {settings.max_queued_runs}); "
-            "try again shortly"
+    if not settings.enable_live_runs:
+        raise LiveRunsDisabledError(
+            "live training runs are disabled on this deployment; "
+            f"use the preloaded demo run (/api/v1/runs/{DEMO_RUN_ID}) instead"
         )
 
-    run = models.PipelineRun(dataset_id=dataset.id, goal=goal, status="pending")
-    db.add(run)
-    db.commit()
-    db.refresh(run)
+    # The count-then-insert is held under a process-wide lock so concurrent
+    # requests can't all observe "below the limit" and then all insert
+    # (found in external code review). A lock, not a DB constraint, is
+    # adequate for this single-instance demo; a multi-instance deployment
+    # would need the bound enforced in the database.
+    with _queue_lock:
+        in_flight = (
+            db.query(models.PipelineRun)
+            .filter(models.PipelineRun.status.in_(("pending", "running")))
+            .count()
+        )
+        if in_flight >= settings.max_queued_runs:
+            raise RunQueueFullError(
+                f"{in_flight} run(s) already pending/running (limit {settings.max_queued_runs}); "
+                "try again shortly"
+            )
+
+        run = models.PipelineRun(dataset_id=dataset.id, goal=goal, status="pending")
+        db.add(run)
+        db.commit()
+        db.refresh(run)
 
     thread = threading.Thread(target=_execute_run, args=(run.id,), daemon=True)
     thread.start()
@@ -307,11 +396,18 @@ def _persist_attempt(db: Session, run_id: str, logged: LoggedAttempt, model) -> 
 
 
 def recover_interrupted_runs(db: Session) -> int:
-    """Called on startup: a run stuck at status='running' means the
-    process died mid-flight (crash, redeploy). Mark it failed with a
-    clear reason rather than leaving it silently stuck forever -- the
-    caller can retry by starting a new run against the same dataset."""
-    stuck = db.query(models.PipelineRun).filter(models.PipelineRun.status == "running").all()
+    """Called on startup: a run stuck at status='running' OR 'pending'
+    means the process died mid-flight (crash, redeploy) -- the worker
+    thread for either lived in the old process and nobody will ever pick
+    it up. Mark both failed with a clear reason rather than leaving them
+    silently stuck forever (a stuck 'pending' row would also permanently
+    consume queue capacity -- found in external code review). The caller
+    can retry via POST /api/v1/runs/{id}/retry."""
+    stuck = (
+        db.query(models.PipelineRun)
+        .filter(models.PipelineRun.status.in_(("running", "pending")))
+        .all()
+    )
     for run in stuck:
         run.status = "failed"
         run.error = "interrupted_by_restart"

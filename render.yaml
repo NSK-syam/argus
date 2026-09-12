@@ -31,8 +31,16 @@ services:
       - key: MLFLOW_TRACKING_URI
         value: sqlite:////opt/render/project/src/mlflow.db
       - key: ANTHROPIC_API_KEY
-        sync: false # set in the Render dashboard -- optional, the deterministic
-        # planner is used automatically whenever this is unset
+        sync: false # OPTIONAL and deliberately left unset for the public demo:
+        # the deterministic planner is used automatically whenever this is
+        # unset. Do NOT set it while ARGUS_ENABLE_LIVE_RUNS is true on a
+        # public URL -- anyone could burn credits by submitting runs.
+      - key: ARGUS_ENABLE_LIVE_RUNS
+        value: "false" # public-demo safety default: the queue bound caps
+        # concurrency, not total cost -- anyone could keep submitting
+        # expensive training jobs. The preloaded demo run (promote /
+        # predict / replay) works with this off. Flip to "true" only for a
+        # private/judged deployment where you accept that cost.
       - key: ARGUS_CORS_ORIGINS
         sync: false # set in the Render dashboard to the deployed Vercel origin,
         # e.g. https://argus-<project>.vercel.app -- defaults to "*" (open)

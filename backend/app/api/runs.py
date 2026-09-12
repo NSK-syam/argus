@@ -29,6 +29,8 @@ def create_run(req: CreateRunRequest, db: Session = Depends(get_db)):
         raise HTTPException(400, "starting a run is currently only supported for the bundled FD001 dataset")
     try:
         run = run_service.start_run(db, dataset, req.goal)
+    except run_service.LiveRunsDisabledError as exc:
+        raise HTTPException(403, str(exc)) from exc
     except run_service.RunQueueFullError as exc:
         raise HTTPException(429, str(exc)) from exc
     return _run_out(run, db)
@@ -47,6 +49,8 @@ def retry_run(run_id: str, db: Session = Depends(get_db)):
     dataset = db.get(models.Dataset, prior.dataset_id)
     try:
         new_run = run_service.start_run(db, dataset, prior.goal)
+    except run_service.LiveRunsDisabledError as exc:
+        raise HTTPException(403, str(exc)) from exc
     except run_service.RunQueueFullError as exc:
         raise HTTPException(429, str(exc)) from exc
     return _run_out(new_run, db)

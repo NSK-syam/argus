@@ -61,6 +61,17 @@ class Settings:
         "0",
         "",
     )
+    # Public-demo safety switch for live training. The queue bound caps
+    # concurrency, not cost: anyone could keep submitting expensive jobs
+    # (and burn Claude credits if ANTHROPIC_API_KEY is set). Found in
+    # external code review. Off in render.yaml; the preloaded demo run
+    # (promote / predict / replay) works regardless. Defaults on for local
+    # dev/tests.
+    enable_live_runs: bool = os.environ.get("ARGUS_ENABLE_LIVE_RUNS", "true").lower() not in (
+        "false",
+        "0",
+        "",
+    )
 
 
 settings = Settings()

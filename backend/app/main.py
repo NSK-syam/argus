@@ -19,7 +19,12 @@ from .core.config import settings
 from .db import models as db_models
 from .db.session import SessionLocal, init_db
 from .ml.pipeline import demo_bundle
-from .services.run_service import cleanup_expired_uploads, recover_interrupted_runs, seed_demo_run
+from .services.run_service import (
+    cleanup_expired_uploads,
+    demo_model_artifacts_ready,
+    recover_interrupted_runs,
+    seed_demo_run,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -87,6 +92,12 @@ def ready() -> dict:
 
     checks["demo_bundle_present"] = demo_bundle.bundle_exists(settings.demo_bundle_dir)
 
+    # The replay endpoint streams real FD001 test-engine cycles from disk,
+    # so a deploy with no data files is not usable even if the DB is fine.
+    checks["fd001_data_present"] = all(
+        (settings.data_dir / f).exists() for f in ("train_FD001.txt", "test_FD001.txt", "RUL_FD001.txt")
+    )
+
     db = SessionLocal()
     try:
         demo_run = db.get(db_models.PipelineRun, "demo-seed-run")
@@ -96,8 +107,17 @@ def ready() -> dict:
     finally:
         db.close()
 
+    # A seeded row is not enough: with a persistent DB and an ephemeral
+    # disk the .joblib files can vanish on redeploy while the row survives
+    # (found in external code review). Require a passing demo model whose
+    # artifact exists and actually loads.
+    artifacts_ok, artifacts_reason = demo_model_artifacts_ready()
+    checks["demo_model_artifact_loadable"] = artifacts_ok
+
     all_ok = all(checks.values())
     body = {"status": "ready" if all_ok else "not_ready", "checks": checks}
+    if not artifacts_ok:
+        body["detail"] = artifacts_reason
     if not all_ok:
         raise HTTPException(status_code=503, detail=body)
     return body

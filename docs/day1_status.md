@@ -414,3 +414,36 @@ missing LICENSE/attribution file). All were independently verified against
 the actual code; fixes are tracked and being worked through after this
 disclosure, in the priority order the review itself suggested — safeguards
 and readiness before a public deploy.
+
+## Day 2 continued — second external review: restart/redeploy resilience
+
+A follow-up review verified the previous two commits on GitHub and raised a
+second set of findings, all about a persistent-DB + ephemeral-disk deploy.
+Each was verified against the code and fixed with regression tests
+(`tests/test_startup_resilience.py`, 5 new; full suite 63 passed):
+
+- `seed_demo_run()` returned early once the demo run's row existed and
+  never recreated the `.joblib` artifacts a redeploy wipes, so `/ready`
+  could pass while `/predict` and `/replay` failed. Now every startup
+  re-dumps any missing demo artifact from the bundle, and `/ready` also
+  checks FD001 files on disk and that a trust-gate-passing demo model's
+  artifact exists *and loads* (503 otherwise).
+- `recover_interrupted_runs()` only failed `running` rows; a `pending` row
+  orphaned by a restart stayed pending forever and consumed queue capacity.
+  Both are now recovered.
+- The queue-bound check was count-then-insert with no lock; concurrent
+  requests could all pass it. Check+insert now run under a process-wide
+  lock (verified with a 12-thread race test against a bound of 3).
+- Live training was reachable by anyone on a public URL -- the queue bound
+  caps concurrency, not total cost or Claude credits. New
+  `ARGUS_ENABLE_LIVE_RUNS` (off in `render.yaml`; 403 with a pointer to the
+  preloaded demo). `render.yaml` and `docs/DEPLOYMENT.md` now say plainly
+  not to set `ANTHROPIC_API_KEY` on a public deploy with live runs on.
+- `docs/DEPLOYMENT.md` was stale (still said Render polls `/health`, said
+  no other env vars were needed). Rewritten with the correct order:
+  backend → frontend → set the exact Vercel origin in `ARGUS_CORS_ORIGINS`
+  on Render → redeploy backend.
+
+Still true, and deliberately so: the test-set-reuse finding is disclosed,
+not fixed, until the prototype phase; CI is written and verified locally
+but not on GitHub yet (see previous commit message for why).
