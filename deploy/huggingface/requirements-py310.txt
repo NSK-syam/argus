@@ -27,7 +27,7 @@ xgboost==3.2.0
 # versions are what the full test suite (58 passed) was last verified
 # against; re-verify the suite before bumping any of them.
 pytest==9.1.1
-pydantic==2.13.3
+pydantic==2.12.5  # HF installs gradio[mcp], which caps pydantic at 2.12.5
 anthropic==1.4.0
 joblib==1.5.3
 fastapi==0.141.1

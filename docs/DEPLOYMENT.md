@@ -128,8 +128,17 @@ startup because scikit-learn differs from the version the committed bundle
 was pickled with (verified in a real Python 3.10 container: identical
 23.43 / 18.42 RMSE numbers, `/ready` all true). `deploy/huggingface/hf_space.py` is a
 launcher that does at startup what the Dockerfile does at build time --
-fetch the pinned, checksummed FD001 files -- then serves the same
-`app.main:app` on port 7860 with a small landing page at `/`. The
+fetch the pinned, checksummed FD001 files -- then lets Gradio own the
+server (that's what the HF runner expects) and attaches the same
+`app.main:app` to it under **`/backend`** (Gradio's own `/api/*` routes
+would otherwise collide), with `/ready` and `/health` also at the root and
+a small landing page at `/`. Three HF-runner specifics it handles, each
+found the hard way: ZeroGPU refuses to start unless some Gradio event is
+wired to a `@spaces.GPU` function (a hidden no-op button); Gradio's own
+CORS middleware would stack headers on top of the backend's, so the
+backend is passed as Gradio's "parent app" and `ARGUS_CORS_ORIGINS` is the
+single source of truth; and Gradio's Node SSR front on Spaces answers
+unknown paths itself, so SSR is disabled. The
 public-demo safety defaults are set in the launcher (overridable in the
 Space's Settings → Variables). `deploy/huggingface/build_space.sh`
 assembles the Space checkout from `backend/`.
@@ -157,8 +166,13 @@ assembles the Space checkout from `backend/`.
    to the Vercel origin and restart the Space (step 3 above).
 
 Free Spaces sleep after 48h idle and have ephemeral disk; the preloaded
-demo re-seeds on every boot, same as Render. Verified locally by running
-`hf_space.py` exactly as a Space does: `/ready` reports every check true.
+demo re-seeds on every boot, same as Render.
+
+**Live (2026-09-12):** `https://nsk1718-argus-backend.hf.space/backend` --
+`/ready` all true; promote (409 for the failing model, 200 for the
+passing one), predict with SHAP explanation, 100 replay engines with a
+working SSE stream, and both safety gates (403 on live runs and uploads)
+verified against the public URL.
 
 ## What changed in the Dockerfile for this
 

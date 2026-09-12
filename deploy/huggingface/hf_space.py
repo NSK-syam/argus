@@ -59,9 +59,35 @@ if sklearn.__version__ != BUNDLE_SKLEARN:
     subprocess.run([sys.executable, str(ROOT / "scripts" / "build_demo_artifact.py")], check=True)
 
 import gradio as gr  # noqa: E402
-import uvicorn  # noqa: E402
 
+from app.db.session import init_db  # noqa: E402
 from app.main import app as fastapi_app  # noqa: E402  (the real backend)
+from app.main import health, ready  # noqa: E402
+from app.services.run_service import (  # noqa: E402
+    cleanup_expired_uploads,
+    recover_interrupted_runs,
+    seed_demo_run,
+)
+from app.db.session import SessionLocal  # noqa: E402
+
+# On the free (ZeroGPU) tier the HF runner launches the Gradio Blocks
+# itself and refuses to start unless some Gradio event is wired to a
+# @spaces.GPU function. Argus never touches a GPU, so the placeholder
+# below is a no-op on a hidden button; outside HF the `spaces` package is
+# absent and it's a plain function.
+try:  # pragma: no cover - HF-only
+    import spaces  # type: ignore
+
+    _gpu = spaces.GPU
+except ImportError:
+    def _gpu(fn):  # type: ignore
+        return fn
+
+
+@_gpu
+def _zerogpu_placeholder() -> str:
+    return "Argus runs on CPU; this exists only to satisfy ZeroGPU startup."
+
 
 LANDING = """
 # Argus backend
@@ -71,11 +97,13 @@ predictive-maintenance ML studio (ABB Accelerator 2026 submission).
 The user-facing app is the separate Next.js frontend; this page just
 confirms the API is up.
 
-- Readiness: [`/ready`](/ready) — DB, FD001 data, demo bundle, seeded demo
-  run, loadable passing model. Returns 503 if anything is missing.
-- Liveness: [`/health`](/health)
-- Preloaded demo run: [`/api/v1/runs/demo-seed-run`](/api/v1/runs/demo-seed-run)
-- OpenAPI docs: [`/docs`](/docs)
+The API is mounted under **`/backend`** on this host:
+
+- Readiness: [`/backend/ready`](/backend/ready) — DB, FD001 data, demo
+  bundle, seeded demo run, loadable passing model. 503 if anything is missing.
+- Liveness: [`/backend/health`](/backend/health)
+- Preloaded demo run: [`/backend/api/v1/runs/demo-seed-run`](/backend/api/v1/runs/demo-seed-run)
+- OpenAPI docs: [`/backend/docs`](/backend/docs)
 
 Live training runs and generic uploads are **disabled** on this public
 deployment (`ARGUS_ENABLE_LIVE_RUNS` / `ARGUS_ENABLE_UPLOADS`); the
@@ -86,10 +114,60 @@ Source: https://github.com/NSK-syam/argus
 
 with gr.Blocks(title="Argus backend") as demo:
     gr.Markdown(LANDING)
+    _btn = gr.Button("zerogpu placeholder", visible=False)
+    _out = gr.Textbox(visible=False)
+    _btn.click(_zerogpu_placeholder, outputs=_out)
 
-# Mounted at "/" AFTER the API routes are registered, so /ready, /health,
-# /api/v1/* and /docs still win; everything else shows the landing page.
-app = gr.mount_gradio_app(fastapi_app, demo, path="/")
+
+def _run_backend_startup() -> None:
+    """What app.main's lifespan does. A FastAPI app mounted inside Gradio's
+    server doesn't get its own lifespan events, so run them here."""
+    init_db()
+    db = SessionLocal()
+    try:
+        recover_interrupted_runs(db)
+        seed_demo_run(db)
+        cleanup_expired_uploads(db)
+    finally:
+        db.close()
+
+
+# On the free HF tier the served Gradio app is not necessarily the one a
+# __main__ block would get to touch after launch() (the ZeroGPU wrapper
+# builds its own), so nothing done post-launch is reliable there. Instead,
+# hook Gradio's own app factory: whichever process builds the
+# Gradio FastAPI app gets the backend attached -- the whole API under
+# /backend (no collisions with Gradio's /api/* routes) plus /ready and
+# /health at the root.
+_run_backend_startup()
+
+from gradio import routes as _gr_routes  # noqa: E402
+
+_orig_create_app = _gr_routes.App.create_app
+
+
+def _create_app_with_backend(*args, **kwargs):
+    # Gradio's own CORS middleware stands down when it sees a "parent" app
+    # that configures CORS; pointing it at the backend makes
+    # ARGUS_CORS_ORIGINS the single source of truth instead of stacking
+    # two sets of Access-Control headers.
+    kwargs.setdefault("parent_app", fastapi_app)
+    server = _orig_create_app(*args, **kwargs)
+    server.add_api_route("/ready", ready, methods=["GET"])
+    server.add_api_route("/health", health, methods=["GET"])
+    server.mount("/backend", fastapi_app)
+    return server
+
+
+_gr_routes.App.create_app = staticmethod(_create_app_with_backend)
+
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", "7860")))
+    # Plain Gradio launch, exactly what the HF runner expects. Server name
+    # and port come from GRADIO_SERVER_NAME / GRADIO_SERVER_PORT (HF sets
+    # them; locally they default to 127.0.0.1:7860). The factory hook above
+    # attaches the backend to whichever app this creates. ssr_mode=False:
+    # on Spaces, Gradio otherwise puts a Node SSR server in front of the
+    # Python app and that front answers unknown paths (like /backend/*)
+    # with the SPA shell instead of forwarding them.
+    demo.launch(ssr_mode=False)
