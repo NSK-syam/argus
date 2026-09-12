@@ -10,6 +10,9 @@ sections below map to its fields.
 
 **Argus**
 
+- **Live demo:** https://argus-five-weld.vercel.app
+- **Source repository:** https://github.com/NSK-syam/argus
+
 ## One-line summary
 
 An agentic AutoML copilot for predictive maintenance that plans, trains,
@@ -89,9 +92,10 @@ A judge doesn't have to wait through a live training run to see any of
 this: the app seeds a **preloaded demo run** at startup from a bundled,
 precomputed result — opening the app shows a one-click "already trained —
 no waiting" path straight to the honest retry, promotion, and replay,
-verified end to end at 7 seconds total. Starting a fresh run against live
-training is also right there for anyone who wants to watch it happen from
-scratch.
+verified end to end at 7 seconds total. For public-demo safety, fresh
+live-training runs are disabled on the hosted deployment. The complete
+training loop remains reproducible from the repository and can be enabled
+locally or in a private deployment.
 
 Once promoted, a model can be exercised two ways: **ad hoc prediction**
 against arbitrary feature values, and — the demo's centerpiece — **live
@@ -192,13 +196,15 @@ one already has a running, rerunnable system behind it.
   permissive licenses (MIT/BSD/Apache-2.0) and used per their terms; none
   are modified or redistributed beyond normal dependency use. Full pinned
   versions are in `backend/requirements.txt` and `frontend/package.json`.
-- **LLM use.** Anthropic's Claude API is used at runtime, with the
-  person's own API key, strictly as a schema-constrained planning
-  component (forced tool use against a validated Pydantic schema) — it
-  never sees raw sensor rows, never writes code that gets executed, and
-  every one of its proposals is independently validated before use and
-  independently graded by the deterministic trust gate before any
-  promotion. This use is disclosed here and in `docs/architecture.md`.
+- **LLM use.** Argus supports Anthropic's Claude API as a
+  schema-constrained planning component (forced tool use against a
+  validated Pydantic schema). The public deployment intentionally uses
+  the deterministic fallback because no Anthropic API key is configured.
+  When enabled with the operator's own key, Claude never sees raw sensor
+  rows, never writes code that gets executed, and every proposal is
+  independently validated before use and graded by the deterministic
+  trust gate before promotion. This optional integration is disclosed
+  here and in `docs/architecture.md`.
 - **No confidential or personal data.** No real ABB plant data, personally
   identifiable information, or confidential material of any kind appears
   anywhere in this submission.
