@@ -11,7 +11,7 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
-import { api, Attempt, ModelVersion, PipelineRun } from "@/lib/api";
+import { API_BASE, api, Attempt, ModelVersion, PipelineRun } from "@/lib/api";
 import { streamSse } from "@/lib/sse";
 import { Badge, Button, Card, MetricPill, Spinner } from "@/components/ui";
 
@@ -37,7 +37,7 @@ export default function RunPage() {
     if (stopRef.current) return;
 
     stopRef.current = streamSse(
-      `${process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000"}/api/v1/runs/${runId}/events`,
+      `${API_BASE}/api/v1/runs/${runId}/events`,
       {
         onEvent: (event, data) => {
           if (event === "attempt") {
