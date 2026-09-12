@@ -117,14 +117,19 @@ frontend second (so you know its origin), then this step.
 
 ## Alternative backend host: Hugging Face Spaces (no Render account needed)
 
-If Render isn't an option, a Docker Space on Hugging Face runs the same
-image on free CPU with no card. `deploy/huggingface/build_space.sh`
-assembles a Space checkout from `backend/` (same Dockerfile, plus the
-public-demo safety defaults baked in as `ENV`, plus the Space `README.md`
-front matter that tells HF it's a Docker app on port 8000).
+If Render isn't an option, a **Gradio** Space on Hugging Face runs the
+backend on free CPU with no card. (Docker Spaces are a paid tier, so this
+path doesn't use the Dockerfile.) `deploy/huggingface/hf_space.py` is a
+launcher that does at startup what the Dockerfile does at build time --
+fetch the pinned, checksummed FD001 files -- then serves the same
+`app.main:app` on port 7860 with a small landing page at `/`. The
+public-demo safety defaults are set in the launcher (overridable in the
+Space's Settings → Variables). `deploy/huggingface/build_space.sh`
+assembles the Space checkout from `backend/`.
 
 1. On huggingface.co: **New → Space**, name it (e.g. `argus-backend`),
-   SDK **Docker**, hardware **CPU basic (free)**, visibility Public.
+   SDK **Gradio** → **Blank** template, hardware **CPU basic (free)**,
+   visibility Public.
 2. Create a **write** access token at huggingface.co/settings/tokens.
 3. From any machine with git:
    ```bash
@@ -133,16 +138,17 @@ front matter that tells HF it's a Docker app on port 8000).
    cd space && git add -A && git commit -m "Argus backend" \
      && git push https://<user>:<token>@huggingface.co/spaces/<user>/argus-backend main
    ```
-4. Watch the build in the Space's **Logs** tab (first build ~5 min: pip
-   install, pinned FD001 fetch, demo-bundle rebuild). When it's running,
-   the backend is at `https://<user>-argus-backend.hf.space` — check
-   `/ready` there.
+4. Watch the build in the Space's **Logs** tab (first build a few minutes:
+   pip install of the pinned requirements, then the FD001 fetch and demo
+   seed on first start). When it's running, the backend is at
+   `https://<user>-argus-backend.hf.space` -- check `/ready` there.
 5. Use that URL as `NEXT_PUBLIC_API_BASE_URL` on Vercel (step 2 above),
    then set `ARGUS_CORS_ORIGINS` in the Space's **Settings → Variables**
    to the Vercel origin and restart the Space (step 3 above).
 
 Free Spaces sleep after 48h idle and have ephemeral disk; the preloaded
-demo re-seeds on every boot, same as Render.
+demo re-seeds on every boot, same as Render. Verified locally by running
+`hf_space.py` exactly as a Space does: `/ready` reports every check true.
 
 ## What changed in the Dockerfile for this
 
