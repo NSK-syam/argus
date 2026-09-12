@@ -78,9 +78,25 @@ it.
 
 1. Go to <https://vercel.com/new> and sign in (GitHub login, no card
    required).
-2. Import this repo. Vercel auto-detects Next.js. Set the **Root
-   Directory** to `frontend` (this is a monorepo — the Next.js app isn't at
-   the repo root).
+2. Import this repo. Set the **Root Directory** to `frontend` (this is a
+   monorepo — the Next.js app isn't at the repo root).
+
+   Vercel now auto-detects this repo as a multi-service project (its
+   **Services** preset, because there's a Next.js app *and* a FastAPI app)
+   and then refuses to deploy without a root `vercel.json` describing both.
+   Don't take that path: the backend is a long-lived stateful server (it
+   writes SQLite and ~7 MB model artifacts to disk, runs training in
+   background threads, and streams SSE), whereas Vercel services are
+   per-request with an ephemeral filesystem, so its startup work would
+   re-run on every cold start. Set the **Application Preset** to
+   **Next.js** instead and host the backend on Render or a Hugging Face
+   Space (below).
+
+   `frontend/vercel.json` pins `"framework": "nextjs"` so this can't
+   regress: with the preset left at "Other", the build itself succeeds and
+   then fails at the last step with *No Output Directory named "public"
+   found* — Vercel looking for a static site instead of reading Next.js's
+   own output.
 3. Add one environment variable before deploying:
    - `NEXT_PUBLIC_API_BASE_URL` = the Render backend URL from step 1.5 above
      (e.g. `https://argus-backend-xxxx.onrender.com`, no trailing slash).
