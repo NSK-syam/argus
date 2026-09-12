@@ -97,14 +97,26 @@ it.
    then fails at the last step with *No Output Directory named "public"
    found* — Vercel looking for a static site instead of reading Next.js's
    own output.
-3. Add one environment variable before deploying:
-   - `NEXT_PUBLIC_API_BASE_URL` = the Render backend URL from step 1.5 above
-     (e.g. `https://argus-backend-xxxx.onrender.com`, no trailing slash).
+3. Point the frontend at your backend. `frontend/.env.production` is
+   committed with the Hugging Face Space URL as the default, so a fresh
+   deploy works with no dashboard configuration at all. To use a different
+   backend (your own Render service, say), either edit that file or set
+   `NEXT_PUBLIC_API_BASE_URL` in Vercel's project settings — a real
+   environment variable takes precedence over the committed file.
 
-   This is a Next.js build-time public env var (`frontend/src/lib/api.ts`
-   reads it, falling back to `http://localhost:8000` for local dev) — it
-   gets baked into the client bundle, so it must be set *before* the first
-   deploy, and any change to it requires a redeploy to take effect.
+   **This value is inlined into the client bundle at build time**, so it
+   must exist *before* the build, and changing it requires a rebuild, not
+   just a restart. That's a genuine footgun: the first Vercel deploy of
+   this repo built without it, fell back to the local-dev default, and the
+   deployed page sat there calling `http://localhost:8000` — the page
+   rendered fine and every API call failed with `ERR_CONNECTION_REFUSED`.
+   Committing the production default is what stops that recurring.
+
+   Note also that `.env.local` (gitignored, used for local dev) outranks
+   `.env.production` in Next.js's load order, so a local production build
+   will pick up localhost while Vercel — which has no `.env.local` — picks
+   up the committed file. To reproduce a deploy build locally, move
+   `.env.local` aside first.
 4. Deploy. No `vercel.json` is needed — Vercel's Next.js preset handles
    build and output automatically.
 5. Once live, note the Vercel URL (e.g. `https://argus-xxxx.vercel.app`).

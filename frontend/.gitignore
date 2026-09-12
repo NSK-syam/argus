@@ -33,6 +33,12 @@ yarn-error.log*
 # env files (can opt-in for committing if needed)
 .env*
 !.env.local.example
+# Committed on purpose: NEXT_PUBLIC_* values are baked into the client
+# bundle at build time and are public by definition, so the deployed
+# backend's URL is not a secret. Having it here means a deploy doesn't
+# silently fall back to http://localhost:8000 when a dashboard env var is
+# missing. A real environment variable still overrides this file.
+!.env.production
 
 # vercel
 .vercel
