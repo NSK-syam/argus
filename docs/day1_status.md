@@ -447,3 +447,39 @@ Each was verified against the code and fixed with regression tests
 Still true, and deliberately so: the test-set-reuse finding is disclosed,
 not fixed, until the prototype phase; CI is written and verified locally
 but not on GitHub yet (see previous commit message for why).
+
+## Day 2 continued — live deployment, and two findings it produced
+
+Backend on a free Hugging Face Gradio Space
+(`https://nsk1718-argus-backend.hf.space/backend`), frontend on Vercel
+(`https://argus-five-weld.vercel.app`). The full flow was clicked through
+in a real browser against the live pair: the preloaded-demo banner
+populates with the real gate numbers, attempt 1 shows the ✗ on
+`test RMSE = 23.43 (need <= 22.0)` while attempt 2 passes all five checks,
+attempt 1's promote button is disabled ("Gate failed — cannot promote"),
+promoting attempt 2 flips its badge to `production`, and the replay
+streams 31 cycles of a real FD001 test engine with predicted RUL, true
+RUL and both conformal bounds plotted.
+
+Two real problems the deploy exposed, neither visible locally:
+
+- **A missing build-time env var is silent and total.** The first Vercel
+  build had no `NEXT_PUBLIC_API_BASE_URL`, so the bundle kept the
+  local-dev fallback and the deployed page called `http://localhost:8000`
+  — it rendered perfectly and every request failed with
+  `ERR_CONNECTION_REFUSED`. Because `NEXT_PUBLIC_*` is inlined at build
+  time, setting the variable afterwards fixes nothing without a rebuild.
+  `frontend/.env.production` now carries the value in the repo.
+- **CORS response headers can't be enforced on `*.hf.space`.** Its proxy
+  echoes any `Origin` (verified: `evil.example.com` got an
+  `access-control-allow-origin` for itself), so `ARGUS_CORS_ORIGINS` was
+  being applied by the app and then overridden on the way out. Added
+  `enforce_allowed_origin`, which refuses a disallowed `Origin` with 403
+  before it reaches a route — enforcement rather than advice, and a no-op
+  unless an allowlist is configured. 4 new tests; suite now 67.
+
+Also fixed for consistency with the methodology disclosure: the frontend
+still said "held-out" in three places (the demo banner, the dataset blurb
+and the replay page's own title), which is the surface a judge actually
+reads. It now says "test engine" and the replay page carries the same
+caveat as the submission copy.

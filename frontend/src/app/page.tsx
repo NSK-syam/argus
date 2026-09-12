@@ -74,11 +74,11 @@ export default function HomePage() {
               </span>
             </div>
             <p className="text-sm text-muted mt-1.5 max-w-xl">
-              A complete, already-run pipeline: attempt 1 honestly fails the
-              trust gate ({demoRun.attempts[0]?.test_metrics?.rmse.toFixed(1)}{" "}
-              RMSE), attempt 2 honestly passes it (
+              A complete, already-run pipeline: attempt 1 fails the trust gate
+              ({demoRun.attempts[0]?.test_metrics?.rmse.toFixed(1)} RMSE),
+              attempt 2 passes it (
               {demoRun.attempts[1]?.test_metrics?.rmse.toFixed(1)} RMSE) — jump
-              straight to promoting the model and replaying a held-out engine.
+              straight to promoting the model and replaying a real test engine.
             </p>
           </div>
           <Button onClick={() => router.push(`/runs/${DEMO_RUN_ID}`)}>
@@ -93,7 +93,7 @@ export default function HomePage() {
             <h2 className="font-medium">1. Dataset</h2>
             <p className="text-sm text-muted mt-1">
               Real NASA C-MAPSS FD001 turbofan degradation data — 100 training
-              engines, 100 held-out test engines with official RUL labels.
+              engines, 100 test engines with official RUL labels.
             </p>
           </div>
           {!dataset && (

@@ -2,7 +2,7 @@
 
 Wires together the DB, the ML core (via app/services/run_service.py), and
 the API routers described in the build plan: datasets, runs (+SSE
-events), model promotion, predict, and held-out engine replay (+SSE).
+events), model promotion, predict, and test-engine replay (+SSE).
 """
 
 from __future__ import annotations
@@ -10,8 +10,9 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from .api import datasets, models as models_api, predict, replay, runs
@@ -62,6 +63,45 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def enforce_allowed_origin(request: Request, call_next):
+    """Reject cross-origin browser requests from origins outside
+    ARGUS_CORS_ORIGINS, instead of relying only on CORS response headers.
+
+    Why this exists: CORS is advisory -- it works by telling the browser
+    what to allow, so any layer in front of the app can override it. The
+    deployed Hugging Face Space is exactly that case: `*.hf.space` sits
+    behind a proxy that echoes whatever `Origin` it is given (verified
+    against the live URL: a request claiming `Origin:
+    https://evil.example.com` came back with
+    `access-control-allow-origin: https://evil.example.com`, plus an
+    `access-control-expose-headers: *` this app never sets). The app's own
+    CORSMiddleware was applying the allowlist correctly underneath, but the
+    browser only ever sees the outermost header, so the setting was
+    decorative there.
+
+    This check is enforcement rather than advice: the request is refused
+    before it reaches a route, which no downstream proxy can undo. It
+    deliberately only inspects `Origin`, which browsers attach to
+    cross-origin requests and omit for same-origin ones -- so curl,
+    server-to-server calls and the app's own docs keep working, while a
+    third-party site can no longer drive this API from a visitor's browser.
+
+    A no-op when ARGUS_CORS_ORIGINS is unset or "*" (local dev, tests,
+    docker-compose), so only a deployment that opts into an allowlist gets
+    the stricter behaviour.
+    """
+    allowed = settings.cors_allow_origins
+    if "*" not in allowed:
+        origin = request.headers.get("origin")
+        if origin is not None and origin not in allowed:
+            return JSONResponse(
+                status_code=403,
+                content={"detail": f"origin not allowed: {origin}"},
+            )
+    return await call_next(request)
 
 
 @app.get("/health")

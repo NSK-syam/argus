@@ -200,7 +200,24 @@ demo re-seeds on every boot, same as Render.
 `/ready` all true; promote (409 for the failing model, 200 for the
 passing one), predict with SHAP explanation, 100 replay engines with a
 working SSE stream, and both safety gates (403 on live runs and uploads)
-verified against the public URL.
+verified against the public URL. Frontend live at
+`https://argus-five-weld.vercel.app`, with the whole flow (retry evidence
+-> promote -> replay with conformal intervals) clicked through in a real
+browser against that backend.
+
+**CORS on `*.hf.space` cannot be enforced by response headers.** The
+Space sits behind a proxy that echoes whatever `Origin` it is given: a
+request claiming `Origin: https://evil.example.com` comes back with
+`access-control-allow-origin: https://evil.example.com` and an
+`access-control-expose-headers: *` this app never sets, on every path
+including Gradio's own root. The app's `CORSMiddleware` applies
+`ARGUS_CORS_ORIGINS` correctly underneath, but a browser only ever sees
+the outermost header, so on that host the setting alone is decorative.
+That is why `enforce_allowed_origin` (app/main.py) *refuses* a request
+whose `Origin` is outside the allowlist (403) rather than just omitting a
+header -- enforcement a downstream proxy can't undo. It inspects only
+`Origin`, so curl and server-to-server callers are unaffected, and it is
+a no-op while `ARGUS_CORS_ORIGINS` is unset or `*`.
 
 ## What changed in the Dockerfile for this
 

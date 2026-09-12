@@ -91,13 +91,16 @@ export default function ReplayPage() {
     <div className="mx-auto max-w-6xl px-4 sm:px-6 py-10 space-y-8">
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">
-          Deployment — held-out engine replay
+          Deployment — test-engine replay
         </h1>
         <p className="text-sm text-muted mt-1 max-w-2xl">
-          Streams a real held-out FD001 test engine, cycle by cycle, through
-          the production model — not a synthetic signal. Watch predicted RUL
-          track (or diverge from) the true remaining life as the engine
-          approaches failure, with a live SHAP explanation of every point.
+          Streams a real FD001 test engine, cycle by cycle, through the
+          production model — not a synthetic signal. Watch predicted RUL track
+          (or diverge from) the true remaining life as the engine approaches
+          failure, with a live SHAP explanation of every point. (The trust
+          gate currently scores against this same test set on every attempt,
+          so it is not a strictly held-out evaluation — see the methodology
+          note in docs/submission_copy.md.)
         </p>
       </div>
 
