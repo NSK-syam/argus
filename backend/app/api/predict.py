@@ -23,6 +23,13 @@ def predict(req: PredictRequest, db: Session = Depends(get_db)):
     mv = db.get(models.ModelVersion, req.model_version_id)
     if mv is None:
         raise HTTPException(404, "model version not found")
+    if mv.stage != "production":
+        # Found in external code review: nothing previously stopped a shadow
+        # (unpromoted, possibly trust-gate-failing) model from serving real
+        # predictions -- only the frontend happened to always pass a
+        # promoted id. Promotion is the trust gate's enforcement point; an
+        # API that skips it isn't actually gated.
+        raise HTTPException(403, "model version is not in production -- promote it first")
 
     missing = set(mv.feature_columns_json) - set(req.features.keys())
     if missing:

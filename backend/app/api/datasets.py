@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy.orm import Session
@@ -34,7 +35,19 @@ async def upload_dataset(file: UploadFile = File(...), db: Session = Depends(get
     calibrated specifically for FD001's schema. Per the plan's own
     assumptions, generic uploads are a stretch goal kept only if the core
     FD001 demo is stable; this endpoint exists so the Dataset/upload
-    entity and its limits are real and testable ahead of that work."""
+    entity and its limits are real and testable ahead of that work.
+
+    Gated by ARGUS_ENABLE_UPLOADS (default on, off in the public
+    deployment's render.yaml): found in external code review that the
+    24-hour expiry promised in the response `warning` below wasn't
+    enforced by anything, which is a real problem specifically for a
+    public-facing deployment accepting arbitrary files from strangers."""
+    if not settings.enable_uploads:
+        raise HTTPException(
+            403,
+            "generic dataset uploads are disabled on this deployment; "
+            "use POST /api/v1/datasets?source=bundled_fd001 instead",
+        )
     contents = await file.read()
     size_mb = len(contents) / (1024 * 1024)
     if size_mb > settings.max_upload_mb:
@@ -71,7 +84,7 @@ async def upload_dataset(file: UploadFile = File(...), db: Session = Depends(get
 @router.get("/{dataset_id}")
 def get_dataset(dataset_id: str, db: Session = Depends(get_db)):
     dataset = db.get(models.Dataset, dataset_id)
-    if dataset is None:
+    if dataset is None or _expire_if_past_ttl(dataset, db):
         raise HTTPException(404, "dataset not found")
     return _dataset_out(dataset)
 
@@ -79,7 +92,34 @@ def get_dataset(dataset_id: str, db: Session = Depends(get_db)):
 @router.get("")
 def list_datasets(db: Session = Depends(get_db)):
     datasets = db.query(models.Dataset).order_by(models.Dataset.created_at.desc()).limit(50).all()
-    return [_dataset_out(d) for d in datasets]
+    live = [d for d in datasets if not _expire_if_past_ttl(d, db)]
+    return [_dataset_out(d) for d in live]
+
+
+def _expire_if_past_ttl(dataset: models.Dataset, db: Session) -> bool:
+    """Actually enforces the 24-hour upload expiry promised in the
+    response `warning` (found unenforced in external code review): past
+    its expiry, an uploaded dataset's stored file and DB row are deleted
+    and it behaves as already-gone to any caller. Returns True if the
+    dataset was expired (and is now removed)."""
+    if dataset.source != "upload" or dataset.expires_at is None:
+        return False
+    expires_at = dataset.expires_at
+    if expires_at.tzinfo is None:
+        # SQLite doesn't reliably round-trip tz-aware datetimes through
+        # SQLAlchemy's DateTime(timezone=True) -- treat a naive value as
+        # already UTC (everything in this app writes expires_at in UTC).
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if datetime.now(timezone.utc) < expires_at:
+        return False
+
+    try:
+        Path(dataset.storage_path).unlink(missing_ok=True)
+    except OSError:
+        pass
+    db.delete(dataset)
+    db.commit()
+    return True
 
 
 def _dataset_out(dataset: models.Dataset) -> dict:

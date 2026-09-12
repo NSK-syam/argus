@@ -20,7 +20,11 @@ services:
     dockerfilePath: ./backend/Dockerfile
     dockerContext: ./backend
     plan: free
-    healthCheckPath: /health
+    # /ready actually checks the DB, the demo bundle, and the seeded demo
+    # run -- not just "the process is alive" like /health -- so a broken
+    # deploy fails this check visibly instead of reporting healthy while
+    # a judge's first click would fail. Found in external code review.
+    healthCheckPath: /ready
     envVars:
       - key: DATABASE_URL
         value: sqlite:////opt/render/project/src/argus.db
@@ -29,3 +33,13 @@ services:
       - key: ANTHROPIC_API_KEY
         sync: false # set in the Render dashboard -- optional, the deterministic
         # planner is used automatically whenever this is unset
+      - key: ARGUS_CORS_ORIGINS
+        sync: false # set in the Render dashboard to the deployed Vercel origin,
+        # e.g. https://argus-<project>.vercel.app -- defaults to "*" (open)
+        # if left unset, so set this before treating the deploy as done
+      - key: ARGUS_ENABLE_UPLOADS
+        value: "false" # public-demo safety default: the upload endpoint's 24h
+        # expiry promise isn't enforced by a real cleanup job yet (see
+        # docs/day1_status.md); disabling it is the safer default for a
+        # public deployment. Uploads were never wired into the training
+        # loop regardless -- only the bundled FD001 dataset can start a run.

@@ -13,8 +13,11 @@ stuck mid-flight.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import threading
+from datetime import datetime, timezone
+from pathlib import Path
 
 import joblib
 import pandas as pd
@@ -182,7 +185,29 @@ def seed_demo_run(db: Session) -> bool:
         return False
 
 
+class RunQueueFullError(Exception):
+    """Raised by start_run when too many PipelineRuns are already
+    pending+running. Found in external code review: _run_slot only ever
+    gated *active training* (the `with _run_slot:` block inside
+    _execute_run below) -- nothing bounded how many background threads
+    and DB rows POST /api/v1/runs could create while requests pile up
+    waiting on that same slot, which is a real, unbounded-resource-growth
+    DoS surface on a public demo. app/api/runs.py turns this into HTTP
+    429."""
+
+
 def start_run(db: Session, dataset: models.Dataset, goal: str) -> models.PipelineRun:
+    in_flight = (
+        db.query(models.PipelineRun)
+        .filter(models.PipelineRun.status.in_(("pending", "running")))
+        .count()
+    )
+    if in_flight >= settings.max_queued_runs:
+        raise RunQueueFullError(
+            f"{in_flight} run(s) already pending/running (limit {settings.max_queued_runs}); "
+            "try again shortly"
+        )
+
     run = models.PipelineRun(dataset_id=dataset.id, goal=goal, status="pending")
     db.add(run)
     db.commit()
@@ -293,3 +318,38 @@ def recover_interrupted_runs(db: Session) -> int:
     if stuck:
         db.commit()
     return len(stuck)
+
+
+def cleanup_expired_uploads(db: Session) -> int:
+    """Called on startup (alongside recover_interrupted_runs): sweeps any
+    uploaded dataset past its 24h expires_at, deleting both its stored
+    file and DB row. Found in external code review that nothing enforced
+    the 24h expiry promised in the upload response's `warning` field --
+    app/api/datasets.py also enforces this lazily on read/list, but a
+    dataset nobody ever requests again would otherwise sit on disk
+    forever, so this closes that gap on every restart too."""
+    now = datetime.now(timezone.utc)
+    candidates = (
+        db.query(models.Dataset)
+        .filter(models.Dataset.source == "upload", models.Dataset.expires_at.isnot(None))
+        .all()
+    )
+    # Filtered in Python, not SQL: SQLite doesn't reliably round-trip
+    # tz-aware datetimes through SQLAlchemy's DateTime(timezone=True), so a
+    # SQL-side "< now" comparison against a naive stored value is fragile.
+    # Everything in this app writes expires_at in UTC, so a naive value
+    # read back is treated as already UTC.
+    expired = []
+    for dataset in candidates:
+        expires_at = dataset.expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if expires_at < now:
+            expired.append(dataset)
+    for dataset in expired:
+        with contextlib.suppress(OSError):
+            Path(dataset.storage_path).unlink(missing_ok=True)
+        db.delete(dataset)
+    if expired:
+        db.commit()
+    return len(expired)

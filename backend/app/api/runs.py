@@ -27,7 +27,10 @@ def create_run(req: CreateRunRequest, db: Session = Depends(get_db)):
         raise HTTPException(404, "dataset not found")
     if dataset.source != "bundled_fd001":
         raise HTTPException(400, "starting a run is currently only supported for the bundled FD001 dataset")
-    run = run_service.start_run(db, dataset, req.goal)
+    try:
+        run = run_service.start_run(db, dataset, req.goal)
+    except run_service.RunQueueFullError as exc:
+        raise HTTPException(429, str(exc)) from exc
     return _run_out(run, db)
 
 
@@ -42,7 +45,10 @@ def retry_run(run_id: str, db: Session = Depends(get_db)):
     if prior.status not in ("failed",):
         raise HTTPException(409, f"only a failed run can be retried (status is '{prior.status}')")
     dataset = db.get(models.Dataset, prior.dataset_id)
-    new_run = run_service.start_run(db, dataset, prior.goal)
+    try:
+        new_run = run_service.start_run(db, dataset, prior.goal)
+    except run_service.RunQueueFullError as exc:
+        raise HTTPException(429, str(exc)) from exc
     return _run_out(new_run, db)
 
 

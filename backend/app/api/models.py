@@ -34,13 +34,45 @@ def promote_model(model_version_id: str, db: Session = Depends(get_db)):
             "production exposure always requires a promotion_eligible model",
         )
 
+    if mv.stage == "production":
+        # Idempotent: re-promoting an already-production model is a no-op,
+        # not a second Deployment row. Found in external code review: the
+        # previous version created a fresh audit row and re-set the same
+        # field on every repeated click.
+        return _model_out(mv)
+
+    # The frontend (runs/[runId]/page.tsx) assumes at most one production
+    # model at a time (`.find(mv => mv.stage === "production")`), so
+    # promotion is global, not scoped to this model's run: demote every
+    # other currently-production ModelVersion in the same transaction.
+    # Found in external code review: without this, two promotions from two
+    # different runs could both read "production" simultaneously, which is
+    # both an inconsistent state and silently wrong for any caller assuming
+    # a single production model.
+    other_production = (
+        db.query(models.ModelVersion)
+        .filter(models.ModelVersion.stage == "production", models.ModelVersion.id != mv.id)
+        .all()
+    )
+    now = datetime.now(timezone.utc)
+    for other in other_production:
+        other.stage = "shadow"
+        db.add(
+            models.Deployment(
+                model_version_id=other.id,
+                stage="shadow",
+                promoted_by="auto_demoted_on_new_promotion",
+                audit_json={"demoted_at": now.isoformat(), "demoted_in_favor_of": mv.id},
+            )
+        )
+
     mv.stage = "production"
     deployment = models.Deployment(
         model_version_id=mv.id,
         stage="production",
         promoted_by="human_confirmed",
         audit_json={
-            "promoted_at": datetime.now(timezone.utc).isoformat(),
+            "promoted_at": now.isoformat(),
             "trust_gate_passed": mv.trust_gate_passed,
             "conformal_q": mv.conformal_q,
         },

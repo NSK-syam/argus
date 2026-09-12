@@ -32,6 +32,35 @@ class Settings:
     max_upload_rows: int = int(os.environ.get("ARGUS_MAX_UPLOAD_ROWS", "50000"))
     anthropic_api_key: str | None = os.environ.get("ANTHROPIC_API_KEY")
     max_concurrent_runs: int = int(os.environ.get("ARGUS_MAX_CONCURRENT_RUNS", "1"))
+    # Bounds how many PipelineRuns can be pending+running at once (across all
+    # datasets), independent of max_concurrent_runs which only gates active
+    # training. Without this, POST /api/v1/runs spawns an unbounded
+    # background thread per request -- a real DoS surface on a public demo,
+    # found in external code review. New requests are refused with 429 once
+    # this many runs are queued/in-flight.
+    max_queued_runs: int = int(os.environ.get("ARGUS_MAX_QUEUED_RUNS", "5"))
+    # Comma-separated list of allowed CORS origins, e.g.
+    # "https://argus-demo.vercel.app,https://argus.example.com". Defaults to
+    # "*" to keep local dev/tests/docker-compose frictionless; a public
+    # deployment (render.yaml) sets this to the real deployed frontend
+    # origin(s) instead. Found in external code review: a public backend
+    # with allow_origins=["*"] has no origin restriction at all.
+    cors_allow_origins: list[str] = [
+        o.strip() for o in os.environ.get("ARGUS_CORS_ORIGINS", "*").split(",") if o.strip()
+    ]
+    # Public-demo safety switch: the generic-upload endpoint accepts and
+    # stores arbitrary CSVs with a 24h expiry that nothing previously
+    # enforced (found in external code review). Uploads are never wired
+    # into the training loop regardless of this flag (only the bundled
+    # FD001 dataset can start a run) -- this only controls whether the
+    # upload endpoint itself is reachable at all. Defaults on so existing
+    # tests/local dev are unaffected; the real public deployment sets this
+    # to false until expiry is enforced by a real cleanup job.
+    enable_uploads: bool = os.environ.get("ARGUS_ENABLE_UPLOADS", "true").lower() not in (
+        "false",
+        "0",
+        "",
+    )
 
 
 settings = Settings()

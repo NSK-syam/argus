@@ -90,7 +90,8 @@ model-promotion trust gate; a real Planner→Trainer→Critic reflection loop
 that visibly revises a genuinely failed first attempt; a live Claude-backed
 planner with a fail-closed fallback to the deterministic sequence; the full
 FastAPI service (datasets, runs with SSE progress, promotion enforcement,
-predict, held-out-engine replay with SSE); SHAP explainability (global and
+predict, real-engine replay with SSE — see the methodology note above on
+why this isn't a strictly held-out set yet); SHAP explainability (global and
 per-prediction); MLflow experiment logging; a Next.js frontend exercising
 every one of those endpoints, verified end to end with a headless browser
 run against the real, running backend; and a Docker Compose stack verified
@@ -100,3 +101,8 @@ Not yet built: generic CSV upload wired into the training loop (accepted
 and stored today, but only the bundled FD001 dataset can start a run — a
 deliberate Tier-2 scope cut) and drift detection (explicitly Tier-2 per the
 plan). Neither blocks the Sep 13/14 idea-phase submission.
+
+## License & attribution
+
+MIT-licensed — see `LICENSE`. Third-party dependencies and the NASA C-MAPSS
+dataset are used per their own terms; see `THIRD_PARTY_NOTICES.md`.
