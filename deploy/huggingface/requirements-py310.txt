@@ -1,0 +1,55 @@
+# Python 3.10 variant of backend/requirements.txt for the Hugging Face
+# Space ONLY. Free Gradio Spaces run on the ZeroGPU image, which is pinned
+# to Python 3.10 and ignores python_version; four of the backend's pins
+# require >=3.11, so they're lowered here to the newest release that still
+# supports 3.10. Because scikit-learn differs from the version the
+# committed demo bundle was pickled with, deploy/huggingface/hf_space.py
+# rebuilds the bundle at startup on this platform (see BUNDLE_SKLEARN).
+# Everything else is identical to backend/requirements.txt.
+# --- implemented and exercised by the current code (backend/app/ml, tests) ---
+# pandas/numpy/scikit-learn/xgboost are pinned EXACTLY (not >=) because
+# backend/app/demo_bundle/ ships real pickled model artifacts -- a clean-
+# machine verification pass found that an unpinned `scikit-learn>=1.4`
+# resolves to whatever is newest on the day someone installs it, which
+# raised InconsistentVersionWarning against the committed demo bundle
+# (built with 1.8.0) the moment pip picked up 1.9.1. Pinning keeps a
+# fresh `pip install` reproducing the exact environment the bundle and
+# every documented benchmark number (test RMSE 18.42, etc.) were
+# generated with.
+pandas==2.3.3
+numpy==2.2.6
+scikit-learn==1.7.2
+xgboost==3.2.0
+
+# Fully pinned below too, for the same reason as pandas/numpy/scikit-learn/
+# xgboost above: found in external code review that a `>=` range still
+# lets a fresh install drift to whatever's newest that day. These exact
+# versions are what the full test suite (58 passed) was last verified
+# against; re-verify the suite before bumping any of them.
+pytest==9.1.1
+pydantic==2.13.3
+anthropic==1.4.0
+joblib==1.5.3
+fastapi==0.141.1
+uvicorn[standard]==0.46.0
+sqlalchemy==2.0.52
+mlflow==3.16.0
+shap==0.49.1
+httpx==0.28.1
+python-multipart==0.0.26
+
+# --- needed for the docker-compose Postgres deployment; sqlite is the
+# default locally and in tests, so this isn't imported (or exercised by
+# `pytest`) in this environment. Pinned to the version verified to
+# install cleanly in a real Docker build (see backend/Dockerfile). ---
+psycopg2-binary==2.9.13
+
+# --- not yet wired into the code; Sep 18-23 items (bounded search
+# already implemented by hand in app/ml/data/baseline.py). Pinned to the
+# version verified to install cleanly in a real Docker build; neither is
+# imported by any code path pytest exercises today. ---
+langgraph==1.2.11
+optuna==5.0.0
+
+# Space launcher (deploy/huggingface/hf_space.py)
+gradio==6.27.0

@@ -20,6 +20,6 @@ PY
 
 cp "$root/deploy/huggingface/README.md" "$dest/README.md"
 cp "$root/deploy/huggingface/hf_space.py" "$dest/hf_space.py"
-# the launcher needs gradio; everything else is the backend's own pins
-grep -q '^gradio==' "$dest/requirements.txt" || printf '\n# Space launcher (deploy/huggingface/hf_space.py)\ngradio==6.27.0\n' >> "$dest/requirements.txt"
+# Free Spaces run Python 3.10 (ZeroGPU image); use the 3.10-compatible pins
+cp "$root/deploy/huggingface/requirements-py310.txt" "$dest/requirements.txt"
 echo "Space assembled at $dest"

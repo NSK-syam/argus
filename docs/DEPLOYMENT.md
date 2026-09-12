@@ -118,8 +118,15 @@ frontend second (so you know its origin), then this step.
 ## Alternative backend host: Hugging Face Spaces (no Render account needed)
 
 If Render isn't an option, a **Gradio** Space on Hugging Face runs the
-backend on free CPU with no card. (Docker Spaces are a paid tier, so this
-path doesn't use the Dockerfile.) `deploy/huggingface/hf_space.py` is a
+backend for free with no card. Two HF constraints shape this path: Docker
+Spaces and `cpu-basic` Gradio Spaces now need a PRO subscription, so a
+free account gets the **ZeroGPU** Gradio tier, whose image is pinned to
+Python 3.10 (the `python_version` README key is ignored there). Four of
+the backend's pins need 3.11, so `deploy/huggingface/requirements-py310.txt`
+lowers just those four, and the launcher rebuilds the demo bundle at
+startup because scikit-learn differs from the version the committed bundle
+was pickled with (verified in a real Python 3.10 container: identical
+23.43 / 18.42 RMSE numbers, `/ready` all true). `deploy/huggingface/hf_space.py` is a
 launcher that does at startup what the Dockerfile does at build time --
 fetch the pinned, checksummed FD001 files -- then serves the same
 `app.main:app` on port 7860 with a small landing page at `/`. The
@@ -128,15 +135,18 @@ Space's Settings → Variables). `deploy/huggingface/build_space.sh`
 assembles the Space checkout from `backend/`.
 
 1. On huggingface.co: **New → Space**, name it (e.g. `argus-backend`),
-   SDK **Gradio** → **Blank** template, hardware **CPU basic (free)**,
-   visibility Public.
+   SDK **Gradio** → **Blank** template, visibility Public. A free account
+   is offered ZeroGPU hardware; that's fine (the app never touches the
+   GPU, it only gets the container).
 2. Create a **write** access token at huggingface.co/settings/tokens.
-3. From any machine with git:
+3. From any machine with Python (`pip install huggingface_hub`; plain
+   `git push` is rejected for the 7 MB model pickle unless git-lfs is set
+   up, the API upload handles that):
    ```bash
-   git clone https://huggingface.co/spaces/<user>/argus-backend space
-   deploy/huggingface/build_space.sh space
-   cd space && git add -A && git commit -m "Argus backend" \
-     && git push https://<user>:<token>@huggingface.co/spaces/<user>/argus-backend main
+   mkdir space && deploy/huggingface/build_space.sh space
+   HF_TOKEN=<write token> python3 -c "from huggingface_hub import HfApi; \
+     HfApi().upload_folder(folder_path='space', repo_id='<user>/argus-backend', \
+     repo_type='space', delete_patterns=['*'])"
    ```
 4. Watch the build in the Space's **Logs** tab (first build a few minutes:
    pip install of the pinned requirements, then the FD001 fetch and demo

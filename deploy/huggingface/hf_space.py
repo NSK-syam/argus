@@ -39,6 +39,25 @@ if not all((DATA_DIR / f).exists() for f in required):
         check=True,
     )
 
+# The committed demo bundle (app/demo_bundle/) holds models pickled with a
+# specific scikit-learn. Free HF Spaces run Python 3.10, which forces an
+# older scikit-learn than the repo pins (see requirements-py310.txt), and
+# unpickling across versions is not something to trust for a judged demo.
+# So: if the running version differs, rebuild the bundle in place before
+# the app seeds from it (~1 min on the Space's CPU; the numbers it
+# produces are the same deterministic reflection loop the docs describe).
+BUNDLE_SKLEARN = "1.8.0"  # keep in sync with backend/requirements.txt
+import sklearn  # noqa: E402
+
+BUNDLE_DIR = ROOT / "app" / "demo_bundle"
+if sklearn.__version__ != BUNDLE_SKLEARN:
+    print(
+        f"scikit-learn {sklearn.__version__} != bundle's {BUNDLE_SKLEARN}; "
+        "rebuilding the demo bundle before seeding...",
+        flush=True,
+    )
+    subprocess.run([sys.executable, str(ROOT / "scripts" / "build_demo_artifact.py")], check=True)
+
 import gradio as gr  # noqa: E402
 import uvicorn  # noqa: E402
 
