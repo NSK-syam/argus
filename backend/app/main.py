@@ -163,6 +163,23 @@ def ready() -> dict:
     return body
 
 
+@app.get("/api/v1/config")
+def deployment_config() -> dict:
+    """What this particular deployment allows, so a client can reflect it in
+    the UI instead of discovering it by getting a 403.
+
+    A public demo runs with live training and generic uploads disabled
+    (ARGUS_ENABLE_LIVE_RUNS / ARGUS_ENABLE_UPLOADS). Without this endpoint
+    the frontend's most obvious button -- "Start pipeline run" -- looked
+    enabled, and clicking it produced a red 403 that reads as a broken app
+    rather than a deliberate safety setting."""
+    return {
+        "live_runs_enabled": settings.enable_live_runs,
+        "uploads_enabled": settings.enable_uploads,
+        "demo_run_id": "demo-seed-run",
+    }
+
+
 app.include_router(datasets.router)
 app.include_router(runs.router)
 app.include_router(models_api.router)

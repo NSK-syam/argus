@@ -483,3 +483,28 @@ still said "held-out" in three places (the demo banner, the dataset blurb
 and the replay page's own title), which is the surface a judge actually
 reads. It now says "test engine" and the replay page carries the same
 caveat as the submission copy.
+
+## Day 2 continued — the 403 that looked like a crash
+
+Clicking "Start pipeline run" on the deployed frontend produced a red
+`403 "live training runs are disabled on this deployment"` banner. The 403
+is correct and deliberate (`ARGUS_ENABLE_LIVE_RUNS=false`, so strangers
+can't queue real training on a free-tier box), but the frontend had no way
+to know it, so the most prominent button on the page looked enabled and
+failed loudly. To a judge that reads as a broken app rather than a safety
+setting — a worse outcome than the risk the flag exists to prevent.
+
+Added `GET /api/v1/config` (`live_runs_enabled`, `uploads_enabled`,
+`demo_run_id`) so a client can reflect what a deployment allows up front.
+The home page now disables the start button with a tooltip, explains in
+plain language why live training is off and what's still fully explorable,
+and offers the preloaded demo as the action instead. A backend without the
+endpoint is treated as "everything enabled", which is what it was.
+
+3 new tests, including one asserting `/api/v1/config` and the 403 it
+predicts can't drift apart. Suite 70.
+
+Worth recording as a process note: `npm run lint` passed this change while
+`next build` failed it with two TS errors (a missed import and a `title`
+prop the `Button` component didn't accept). Lint is not a typecheck — the
+production build is the gate, and CI runs it for exactly this reason.

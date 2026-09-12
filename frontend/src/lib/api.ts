@@ -12,6 +12,12 @@ export const API_BASE =
 // evidence -> promote -> replay) with no live-training wait.
 export const DEMO_RUN_ID = "demo-seed-run";
 
+export interface DeploymentConfig {
+  live_runs_enabled: boolean;
+  uploads_enabled: boolean;
+  demo_run_id: string;
+}
+
 export interface DatasetProfile {
   n_rows: number;
   n_engines: number;
@@ -129,6 +135,11 @@ async function json<T>(res: Response): Promise<T> {
 }
 
 export const api = {
+  // What this deployment allows. A public demo disables live training and
+  // uploads, and the UI reflects that up front rather than letting someone
+  // click "Start pipeline run" and get a 403 that looks like a crash.
+  getConfig: () => fetch(`${API_BASE}/api/v1/config`).then((r) => json<DeploymentConfig>(r)),
+
   createBundledDataset: () =>
     fetch(`${API_BASE}/api/v1/datasets?source=bundled_fd001`, { method: "POST" }).then((r) =>
       json<Dataset>(r)

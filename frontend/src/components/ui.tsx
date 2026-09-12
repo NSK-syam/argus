@@ -53,12 +53,14 @@ export function Button({
   variant = "primary",
   type = "button",
   className,
+  title,
 }: {
   children: ReactNode;
   onClick?: () => void;
   disabled?: boolean;
   variant?: "primary" | "secondary" | "danger";
   type?: "button" | "submit";
+  title?: string;
   className?: string;
 }) {
   const variants: Record<string, string> = {
@@ -73,6 +75,7 @@ export function Button({
       type={type}
       onClick={onClick}
       disabled={disabled}
+      title={title}
       className={clsx(
         "rounded-md px-3.5 py-2 text-sm font-medium transition-colors cursor-pointer disabled:cursor-not-allowed",
         variants[variant],

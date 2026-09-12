@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { api, Dataset, DEMO_RUN_ID, PipelineRun } from "@/lib/api";
+import { api, Dataset, DEMO_RUN_ID, DeploymentConfig, PipelineRun } from "@/lib/api";
 import { Badge, Button, Card, Spinner } from "@/components/ui";
 
 const DEFAULT_GOAL =
@@ -16,6 +16,7 @@ export default function HomePage() {
   const [startingRun, setStartingRun] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [demoRun, setDemoRun] = useState<PipelineRun | null | undefined>(undefined);
+  const [config, setConfig] = useState<DeploymentConfig | null>(null);
 
   // Check once, quietly, whether the backend has a preloaded demo run
   // seeded (it does unless the demo bundle is missing) -- undefined while
@@ -23,7 +24,12 @@ export default function HomePage() {
   // it can actually be used.
   useEffect(() => {
     api.getRun(DEMO_RUN_ID).then(setDemoRun).catch(() => setDemoRun(null));
+    // Older backends have no /config; treat that as "everything enabled",
+    // which is what they were.
+    api.getConfig().then(setConfig).catch(() => setConfig(null));
   }, []);
+
+  const liveRunsDisabled = config !== null && !config.live_runs_enabled;
 
   async function loadDataset() {
     setLoadingDataset(true);
@@ -189,11 +195,35 @@ export default function HomePage() {
         </div>
       )}
 
-      <div className="flex justify-end">
+      {liveRunsDisabled && (
+        <div className="rounded-md border border-border bg-surface-raised px-4 py-3 text-sm text-muted">
+          <span className="text-fg">Live training is turned off on this public
+          deployment.</span>{" "}
+          Anyone could otherwise queue real training jobs on a free-tier box, so
+          starting a fresh run is disabled here. Everything a run produces is
+          still fully explorable through the preloaded demo above — the honest
+          retry, promotion, ad hoc prediction and engine replay. To run training
+          live, deploy your own instance with{" "}
+          <code className="text-xs">ARGUS_ENABLE_LIVE_RUNS=true</code> (see
+          docs/DEPLOYMENT.md).
+        </div>
+      )}
+
+      <div className="flex justify-end gap-3">
+        {liveRunsDisabled && demoRun && (
+          <Button onClick={() => router.push(`/runs/${DEMO_RUN_ID}`)} className="px-6 py-2.5">
+            View preloaded demo →
+          </Button>
+        )}
         <Button
           onClick={startRun}
-          disabled={!dataset || startingRun}
+          disabled={!dataset || startingRun || liveRunsDisabled}
           className="px-6 py-2.5"
+          title={
+            liveRunsDisabled
+              ? "Live training is disabled on this deployment"
+              : undefined
+          }
         >
           {startingRun ? (
             <span className="flex items-center gap-2">
