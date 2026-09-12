@@ -115,6 +115,35 @@ frontend second (so you know its origin), then this step.
    slow — see the free-tier note above). With live runs disabled, the
    "start a new run" action returns HTTP 403 by design.
 
+## Alternative backend host: Hugging Face Spaces (no Render account needed)
+
+If Render isn't an option, a Docker Space on Hugging Face runs the same
+image on free CPU with no card. `deploy/huggingface/build_space.sh`
+assembles a Space checkout from `backend/` (same Dockerfile, plus the
+public-demo safety defaults baked in as `ENV`, plus the Space `README.md`
+front matter that tells HF it's a Docker app on port 8000).
+
+1. On huggingface.co: **New → Space**, name it (e.g. `argus-backend`),
+   SDK **Docker**, hardware **CPU basic (free)**, visibility Public.
+2. Create a **write** access token at huggingface.co/settings/tokens.
+3. From any machine with git:
+   ```bash
+   git clone https://huggingface.co/spaces/<user>/argus-backend space
+   deploy/huggingface/build_space.sh space
+   cd space && git add -A && git commit -m "Argus backend" \
+     && git push https://<user>:<token>@huggingface.co/spaces/<user>/argus-backend main
+   ```
+4. Watch the build in the Space's **Logs** tab (first build ~5 min: pip
+   install, pinned FD001 fetch, demo-bundle rebuild). When it's running,
+   the backend is at `https://<user>-argus-backend.hf.space` — check
+   `/ready` there.
+5. Use that URL as `NEXT_PUBLIC_API_BASE_URL` on Vercel (step 2 above),
+   then set `ARGUS_CORS_ORIGINS` in the Space's **Settings → Variables**
+   to the Vercel origin and restart the Space (step 3 above).
+
+Free Spaces sleep after 48h idle and have ephemeral disk; the preloaded
+demo re-seeds on every boot, same as Render.
+
 ## What changed in the Dockerfile for this
 
 `backend/Dockerfile` already worked for `docker-compose` (used throughout
